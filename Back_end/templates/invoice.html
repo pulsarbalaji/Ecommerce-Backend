@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 12px; margin: 30px; }
+    .header, .footer { width: 100%; }
+    .company-info { float: left; }
+    .company-logo { float: right; }
+    .clear { clear: both; }
+    h1 { text-align: center; margin-top: 20px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background: #f2f2f2; }
+    .summary { margin-top: 20px; float: right; width: 40%; }
+    .summary table { border: none; }
+    .summary td { text-align: right; padding: 5px; }
+    .customer-info { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="company-info">
+      <strong>{{ company.name }}</strong><br>
+      {{ company.address }}<br>
+      Email: {{ company.email }}<br>
+      Phone: {{ company.phone }}
+    </div>
+    <div class="company-logo">
+      <img src="{{ company.logo_url }}" width="120" height="50">
+    </div>
+    <div class="clear"></div>
+  </div>
+
+  <h1>Invoice</h1>
+
+  <div class="customer-info">
+    <b>Invoice Number:</b> {{ invoice_number }}<br>
+    <b>Order Number:</b> {{ order.order_number }}<br>
+    <b>Customer:</b> {{ order.customer.full_name }}<br>
+    <b>Email:</b> {{ order.customer.email }}<br>
+    <b>Shipping Address:</b> {{ order.shipping_address }}<br>
+    <b>Billing Address:</b> {{ order.billing_address }}<br>
+    <b>Date:</b> {{ order.ordered_at|date:"d-m-Y" }}<br>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Product</th>
+        <th>Qty</th>
+        <th>Price</th>
+        <th>Tax</th>
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in order.items %}
+<tr>
+  <td>{{ item.product_name }}</td>
+  <td>{{ item.quantity }}</td>
+  <td>{{ item.price }}</td>
+  <td>{{ item.tax }}</td>
+  <td>{{ item.total }}</td>
+</tr>
+{% endfor %}
+
+    </tbody>
+  </table>
+
+  <div class="summary">
+    <table>
+      <tr>
+        <td>Subtotal:</td>
+        <td>{{ order.subtotal }}</td>
+      </tr>
+      <tr>
+        <td>Tax:</td>
+        <td>{{ order.tax }}</td>
+      </tr>
+      <tr>
+        <td>Shipping:</td>
+        <td>{{ order.shipping_cost }}</td>
+      </tr>
+      <tr>
+        <td><b>Total:</b></td>
+        <td><b>{{ order.total_amount }}</b></td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="clear"></div>
+
+  <div class="footer" style="margin-top: 50px; text-align: center;">
+    Thank you for shopping with {{ company.name }}!
+  </div>
+</body>
+</html>
