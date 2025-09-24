@@ -8,11 +8,22 @@ from django.core.mail import send_mail
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.shortcuts import get_object_or_404
+from django.contrib.auth import authenticate
 from .models import *
 from rest_framework.permissions import AllowAny
 from django.conf import settings
+import requests
+from twilio.rest import Client
+from google.oauth2 import id_token
+import firebase_admin
+from firebase_admin import credentials, auth as firebase_auth
+
 
 from .serializers import *
+
+if not firebase_admin._apps:
+    cred = credentials.Certificate("firebase/firebase_credentials.json")
+    firebase_admin.initialize_app(cred)
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
@@ -210,3 +221,301 @@ class CustomerListView(APIView):
             "status": True,
             "data": serializer.data
         }, status=status.HTTP_200_OK)
+    
+
+if not firebase_admin._apps:
+    firebase_admin.initialize_app()
+
+class GoogleRegisterView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        token = request.data.get("token")
+        full_name = request.data.get("full_name")
+        address = request.data.get("address")
+        dob = request.data.get("dob")
+        gender = request.data.get("gender")
+        profile_image = request.data.get("profile_image")
+
+        if not token:
+            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # 🔑 Verify Firebase ID token
+            decoded_token = firebase_auth.verify_id_token(token)
+            email = decoded_token.get("email")
+
+            if not email:
+                return Response({"error": "Email not found in token"}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 🔑 Get or create Auth user
+            user, created = Auth.objects.get_or_create(email=email, defaults={"login_method": "google"})
+
+            # 🔑 If user is newly created, also create CustomerDetails
+            if created:
+                CustomerDetails.objects.create(
+                    auth=user,
+                    full_name=full_name if full_name else decoded_token.get("name", ""),
+                    address=address,
+                    dob=dob,
+                    gender=gender,
+                    profile_image=profile_image  # Only if you handle image upload properly
+                )
+
+            # 🔑 Generate JWT tokens
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "login_method": user.login_method,
+                    "customer": {
+                        "full_name": user.customer_details.full_name if hasattr(user, "customer_details") else None,
+                        "address": user.customer_details.address if hasattr(user, "customer_details") else None,
+                        "dob": user.customer_details.dob if hasattr(user, "customer_details") else None,
+                        "gender": user.customer_details.gender if hasattr(user, "customer_details") else None,
+                        "profile_image": (
+                            request.build_absolute_uri(user.customer_details.profile_image.url)
+                            if hasattr(user, "customer_details") and user.customer_details.profile_image
+                            else None
+                        ),
+                    },
+                },
+            })
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+class GoogleLoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        token = request.data.get("token")
+        if not token:
+            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Verify Firebase ID token
+            decoded_token = firebase_auth.verify_id_token(token)
+            email = decoded_token.get("email")
+            name = decoded_token.get("name")
+            picture = decoded_token.get("picture")
+
+            if not email:
+                return Response({"error": "Email not found in token"}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Get or create Auth user
+            user, created = Auth.objects.get_or_create(
+                email=email,
+                defaults={"login_method": "google"}
+            )
+
+            # Update login_method if not already google
+            if user.login_method != "google":
+                user.login_method = "google"
+                user.save()
+
+            # Create or update CustomerDetails
+            customer, c_created = CustomerDetails.objects.get_or_create(auth=user)
+            if c_created:
+                customer.full_name = name or ""
+                customer.profile_image = picture or None
+                customer.save()
+
+            # Generate JWT tokens
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "login_method": user.login_method,
+                    "customer": {
+                        "full_name": customer.full_name,
+                        "address": customer.address,
+                        "dob": customer.dob,
+                        "gender": customer.gender,
+                        "profile_image": customer.profile_image.url if customer.profile_image else picture
+                    }
+                }
+            })
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+class EmailRegisterStep1(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = EmailRegisterSerializer(data=request.data)
+        if serializer.is_valid():
+            otp_entry = serializer.save()
+            return Response({
+                "message": "OTP sent to your email",
+                "session_id": otp_entry.session_id
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class EmailRegisterStep2(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VerifyEmailOTPSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+
+            # Issue JWT tokens
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                "message": "Account created successfully",
+                "user_id": user.id,
+                "email": user.email,
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            }, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomerEmailAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email")
+        password = request.data.get("password")
+
+        if not email or not password:
+            return Response({"error": "Email and password are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = authenticate(request, email=email, password=password)
+
+        if user is None:
+            return Response({"error": "Invalid email or password"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if not user.is_active:
+            return Response({"error": "This account is disabled"}, status=status.HTTP_403_FORBIDDEN)
+
+        refresh = RefreshToken.for_user(user)
+        user_data = AuthSerializer(user).data  
+
+        return Response({
+            "message": "Login successful",
+            "user": user_data,
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        }, status=status.HTTP_200_OK)
+
+
+class CustomerDetailsAPIView(APIView):
+
+    def post(self, request):
+        auth_id = request.data.get("auth")
+        if not auth_id:
+            return Response({"error": "auth id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = CustomerSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(auth_id=auth_id)
+            return Response({"message": "Customer details created", "data": serializer.data}, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk):
+        try:
+            customer = CustomerDetails.objects.get(pk=pk)
+        except CustomerDetails.DoesNotExist:
+            return Response({"error": "Customer details not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = CustomerSerializer(customer, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"message": "Customer details updated", "data": serializer.data}, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+class PhoneRegisterStep1(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PhoneOTPSerializer(data=request.data)
+        if serializer.is_valid():
+            otp_entry = serializer.save()
+
+            # Send WhatsApp OTP via Twilio
+            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            client.messages.create(
+                body=f"Your OTP is {otp_entry.otp}",
+                from_="whatsapp:+14155238886",  # Twilio Sandbox
+                to=f"whatsapp:{otp_entry.phone}"
+            )
+
+            return Response({
+                "message": "OTP sent via WhatsApp",
+                "session_id": otp_entry.session_id
+            }, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PhoneRegisterStep2(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VerifyPhoneOTPSerializer(data=request.data)
+        if serializer.is_valid():
+            data = serializer.save()
+            return Response({
+                "message": "Phone verified successfully",
+                "user_id": data["user"].id,
+                "phone": data["user"].phone,
+                "access": data["access"],
+                "refresh": data["refresh"]
+            }, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+class PhoneLoginStep1(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PhoneLoginOTPSerializer(data=request.data)
+        if serializer.is_valid():
+            otp_entry = serializer.save()
+
+            # Send OTP via Twilio WhatsApp
+            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            client.messages.create(
+                body=f"Your login OTP is {otp_entry.otp}",
+                from_="whatsapp:+14155238886",  # Twilio Sandbox
+                to=f"whatsapp:{otp_entry.phone}"
+            )
+
+            return Response({
+                "message": "OTP sent via WhatsApp",
+                "session_id": otp_entry.session_id
+            }, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PhoneLoginStep2(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VerifyPhoneLoginOTPSerializer(data=request.data)
+        if serializer.is_valid():
+            data = serializer.save()
+            return Response({
+                "message": "Login successful",
+                "user_id": data["user"].id,
+                "phone": data["user"].phone,
+                "access": data["access"],
+                "refresh": data["refresh"]
+            }, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
