@@ -57,9 +57,8 @@ class OrderDetails(models.Model):
     
     class PaymentMethod(models.TextChoices):
         COD = "cod", _("Cash on Delivery")
-        CARD = "card", _("Credit/Debit Card")
-        UPI = "upi", _("UPI / Wallet")
-        NET_BANKING = "netbanking", _("Net Banking")
+        ONLINE = "online", _("Online")
+        
 
     class PaymentStatus(models.TextChoices):
         PENDING = "pending", _("Pending")
