@@ -43,6 +43,7 @@ INSTALLED_APPS = [
 
     'auth_model',
     'products',
+    'payment',
 ]
 
 MIDDLEWARE = [

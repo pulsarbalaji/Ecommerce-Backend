@@ -294,7 +294,9 @@ class GoogleLoginView(APIView):
     def post(self, request):
         token = request.data.get("token")
         if not token:
-            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({
+                "message": "No token provided"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             # Verify Firebase ID token
@@ -304,7 +306,9 @@ class GoogleLoginView(APIView):
             picture = decoded_token.get("picture")
 
             if not email:
-                return Response({"error": "Email not found in token"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({
+                    "message": "Email not found in token"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             # Get or create Auth user
             user, created = Auth.objects.get_or_create(
@@ -312,7 +316,7 @@ class GoogleLoginView(APIView):
                 defaults={"login_method": "google"}
             )
 
-            # Update login_method if not already google
+            # Ensure login method is google
             if user.login_method != "google":
                 user.login_method = "google"
                 user.save()
@@ -328,25 +332,35 @@ class GoogleLoginView(APIView):
             refresh = RefreshToken.for_user(user)
 
             return Response({
-                "refresh": str(refresh),
-                "access": str(refresh.access_token),
+                "message": "Login successful",
                 "user": {
                     "id": user.id,
                     "email": user.email,
+                    "phone": user.phone,
                     "login_method": user.login_method,
-                    "customer": {
+                    "customer_details": {
+                        "id": customer.id,
                         "full_name": customer.full_name,
                         "address": customer.address,
                         "dob": customer.dob,
                         "gender": customer.gender,
-                        "profile_image": customer.profile_image.url if customer.profile_image else picture
+                        "profile_image": (
+                            customer.profile_image.url if customer.profile_image else picture
+                        ),
+                        "created_at": customer.created_at,
+                        "updated_at": customer.updated_at,
+                        "auth": customer.auth.id
                     }
-                }
-            })
+                },
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response({
+                "message": str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
 class EmailRegisterStep1(APIView):
     permission_classes = [AllowAny]
 
@@ -445,13 +459,14 @@ class PhoneRegisterStep1(APIView):
         serializer = PhoneOTPSerializer(data=request.data)
         if serializer.is_valid():
             otp_entry = serializer.save()
+            print(otp_entry.phone,"Test")
 
             # Send WhatsApp OTP via Twilio
             client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
             client.messages.create(
-                body=f"Your OTP is {otp_entry.otp}",
-                from_="whatsapp:+14155238886",  # Twilio Sandbox
-                to=f"whatsapp:{otp_entry.phone}"
+                body=f"{otp_entry.otp}is your Ecommerce Register verification code.",
+                from_="whatsapp:+14155238886",  
+                to=f"whatsapp:+91{otp_entry.phone}"
             )
 
             return Response({
@@ -490,9 +505,9 @@ class PhoneLoginStep1(APIView):
             # Send OTP via Twilio WhatsApp
             client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
             client.messages.create(
-                body=f"Your login OTP is {otp_entry.otp}",
+                body=f"{otp_entry.otp}is your Ecommerce Register verification code.",
                 from_="whatsapp:+14155238886",  # Twilio Sandbox
-                to=f"whatsapp:{otp_entry.phone}"
+                to=f"whatsapp:+91{otp_entry.phone}"
             )
 
             return Response({
@@ -502,20 +517,24 @@ class PhoneLoginStep1(APIView):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
 class PhoneLoginStep2(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = VerifyPhoneLoginOTPSerializer(data=request.data)
+
         if serializer.is_valid():
-            data = serializer.save()
+            data = serializer.save()  # This should return {"user": user, "access": ..., "refresh": ...}
+            user = data["user"]
+
+            # Serialize user + customer details
+            user_data = AuthSerializer(user).data  
+
             return Response({
                 "message": "Login successful",
-                "user_id": data["user"].id,
-                "phone": data["user"].phone,
+                "user": user_data,              
                 "access": data["access"],
-                "refresh": data["refresh"]
+                "refresh": data["refresh"],
             }, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

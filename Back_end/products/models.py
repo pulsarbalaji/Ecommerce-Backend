@@ -6,6 +6,7 @@ import uuid
 class Category(models.Model):
     category_name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True, null=True)
+    category_image = models.ImageField(upload_to="category/", blank=True, null=True)
 
     created_by = models.ForeignKey(AdminDetails,on_delete=models.CASCADE, related_name='category',null=True,blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -139,3 +140,16 @@ class Invoice(models.Model):
     class Meta:
         db_table = "invoice"
         ordering = ["-generated_at"]
+
+class Contactus(models.Model):
+    name = models.CharField(max_length=300, blank=False, null=False)
+    email = models.EmailField(null=True, blank=True)
+    phone = models.CharField(max_length=15,null=True, blank=True)
+    message = models.TextField(max_length=3000, blank=False, null=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "contact_us"
+        ordering = ["-created_at"]

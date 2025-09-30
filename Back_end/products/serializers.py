@@ -94,3 +94,9 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
 
         instance.save()
         return instance
+    
+class ContactusSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Contactus  
+        fields = '__all__'

@@ -11,6 +11,7 @@ from rest_framework import status
 from django.template.loader import render_to_string
 from django.http import HttpResponse
 from xhtml2pdf import pisa
+from Back_end.pagination import CustomPageNumberPagination
 from django.utils.dateparse import parse_date
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import AllowAny
@@ -276,3 +277,137 @@ class InvoicePDFView(APIView):
             return HttpResponse("Error generating PDF", status=500)
 
         return response
+    
+
+class ProductListAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, id=None):
+        try:
+            if id:
+                product = Product.objects.filter(id=id).first()
+                if not product:
+                    return Response({
+                        "message": "Product not found",
+                        "success": False,
+                        "error": True,
+                        "data": None
+                    }, status=status.HTTP_404_NOT_FOUND)
+
+                serializer = ProductSerializer(product)
+                return Response({
+                    "message": "Product fetched successfully",
+                    "status": True,
+                    "data": serializer.data
+                }, status=status.HTTP_200_OK)
+
+            else:
+                products = Product.objects.all().order_by('-id')
+                paginator = CustomPageNumberPagination()
+                paginated_qs = paginator.paginate_queryset(products, request)
+                serializer = ProductSerializer(paginated_qs, many=True)
+                
+                return paginator.get_paginated_response(serializer.data)
+
+        except Exception as e:
+            return Response({
+                "message": str(e),  # 
+                "status": False,
+                "data": None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+class CategoryListAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, id=None):
+        try:
+            if id:
+                category = Category.objects.filter(id=id).first()
+                if not category:
+                    return Response({
+                        "message": "Category not found",
+                        "success": False,
+                        "error": True,
+                        "data": None
+                    }, status=status.HTTP_404_NOT_FOUND)
+
+                serializer = CategorySerializer(category)
+                return Response({
+                    "message": "Category fetched successfully",
+                    "status": True,
+                    "data": serializer.data
+                }, status=status.HTTP_200_OK)
+
+            else:
+                categories = Category.objects.all().order_by("-created_at")
+                serializer = CategorySerializer(categories, many=True)
+                return Response(
+                    {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
+                )
+        except Exception as e:
+            return Response({
+                "message": str(e),  # 
+                "status": False,
+                "data": None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+class ProductFilter(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, category_id=None):
+        try:
+            # Always filter products, if category_id given apply filter
+            products = Product.objects.all().order_by("-id")
+
+            if category_id:
+                products = products.filter(category_id=category_id)
+
+            # Pagination
+            paginator = CustomPageNumberPagination()
+            paginated_qs = paginator.paginate_queryset(products, request)
+            serializer = ProductSerializer(paginated_qs, many=True)
+
+            return paginator.get_paginated_response(serializer.data)
+
+        except Exception as e:
+            return Response({
+                "message": str(e),
+                "status": False,
+                "data": None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ContactusView(APIView):
+
+    def post(self, request):
+        serializer = ContactusSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {
+                    "status": True,
+                    "message": "Contactus created successfully",
+                    "data": serializer.data,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+        return Response(
+            {"status": False, "errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def get(self, request, pk=None):
+
+        if pk:
+            contactus = get_object_or_404(Contactus, pk=pk)
+            serializer = ContactusSerializer(contactus)
+            return Response(
+                {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
+            )
+
+        contactus = Contactus.objects.all().order_by("-created_at")
+        serializer = ContactusSerializer(contactus, many=True)
+        return Response(
+            {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
+        )
+

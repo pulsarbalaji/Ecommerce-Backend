@@ -7,6 +7,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('auth_model.urls')),  # Link to app's URLconf
     path('api/', include('products.urls')),  # Link to app's URLconf
+    # path('api/', include('payment.urls')),  # Link to app's URLconf
 ]
 
 if settings.DEBUG:
