@@ -3,6 +3,8 @@ from django.db import models
 from django.utils import timezone
 import uuid
 from datetime import datetime, timedelta
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 
 class AuthManager(BaseUserManager):
     def create_user(self, email=None, phone=None, password=None, **extra_fields):
@@ -31,14 +33,16 @@ class AuthManager(BaseUserManager):
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
+        extra_fields.setdefault("is_active", True)
+
 
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True")
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True")
 
-        return self.create_user(email=email, password=password, **extra_fields)
-
+        user = self.create_user(email=email, password=password, **extra_fields)
+        return user
 
 class Auth(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True, null=True, blank=True)
@@ -84,6 +88,17 @@ class AdminDetails(models.Model):
 
     class meta:
         db_table ="admin_details"
+
+
+@receiver(post_save, sender=Auth)
+def create_admin_details(sender, instance, created, **kwargs):
+    if created and instance.is_superuser:
+        AdminDetails.objects.create(
+            auth=instance,
+            full_name=instance.email.split("@")[0].capitalize() if instance.email else "Admin",
+            phone=instance.phone,
+            role="superadmin"
+        )
 
 
 class CustomerDetails(models.Model):

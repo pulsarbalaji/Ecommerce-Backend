@@ -7,8 +7,9 @@ from products.models import OrderDetails
 from auth_model.models import CustomerDetails
 from django.shortcuts import get_object_or_404
 import razorpay
+from decimal import Decimal
 from django.conf import settings
-
+from razorpay.errors import SignatureVerificationError
 # Razorpay client
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
@@ -56,21 +57,34 @@ class CreateOrderAPIView(APIView):
 
 
 # Verify Online Payment
-class VerifyPaymentAPIView(APIView):
 
+class VerifyPaymentAPIView(APIView):
     def post(self, request):
-        order_id = request.data.get("order_id")
+        order_id = request.data.get("order_id")   # backend DB order
         razorpay_order_id = request.data.get("razorpay_order_id")
         razorpay_payment_id = request.data.get("razorpay_payment_id")
         razorpay_signature = request.data.get("razorpay_signature")
 
-        # Fetch Payment
+        # Verify signature
+        try:
+            client.utility.verify_payment_signature({
+                "razorpay_order_id": razorpay_order_id,
+                "razorpay_payment_id": razorpay_payment_id,
+                "razorpay_signature": razorpay_signature
+            })
+        except SignatureVerificationError:
+            return Response({
+                "status": False,
+                "message": "Payment verification failed"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update payment
         payment = get_object_or_404(Payment, order_id=razorpay_order_id)
         payment.payment_id = razorpay_payment_id
         payment.status = "success"
         payment.save()
 
-        # Update Order
+        # Update order
         order = get_object_or_404(OrderDetails, id=order_id)
         order.payment_status = "success"
         order.status = OrderDetails.OrderStatus.PROCESSING
