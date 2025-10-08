@@ -411,3 +411,42 @@ class ContactusView(APIView):
             {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
         )
 
+class OrderStatusUpdateView(APIView):
+
+    def put(self, request, id):
+        try:
+            order = OrderDetails.objects.get(id=id)
+        except OrderDetails.DoesNotExist:
+            return Response(
+                {"message": "Order not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        order_status = request.data.get("order_status")
+
+        if not order_status:
+            return Response(
+                {"message": "Missing field: order_status"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        valid_statuses = [choice[0] for choice in OrderDetails.OrderStatus.choices]
+        if order_status not in valid_statuses:
+            return Response(
+                {"message": f"Invalid status. Allowed values: {valid_statuses}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ✅ Correct field name here
+        order.status = order_status
+        order.save()
+
+        return Response(
+            {
+                "message": "Order status updated successfully.",
+                "order_id": order.id,
+                "order_number": order.order_number,
+                "order_status": order.status,
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -21,6 +21,8 @@ urlpatterns = [
 
     path("orderspdf/<int:order_id>/", InvoicePDFView.as_view(), name="order-invoice-pdf"),
 
+    path("order-status/<int:id>/", OrderStatusUpdateView.as_view(), name="order-status-update"),
+
     path("contactus/", ContactusView.as_view(), name="Contactus-View"),
     path("contactus/<int:pk>/", ContactusView.as_view(), name="Contactus-View"),
 ]
