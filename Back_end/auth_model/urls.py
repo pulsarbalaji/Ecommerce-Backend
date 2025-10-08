@@ -5,7 +5,7 @@ PhoneRegisterStep1,PhoneRegisterStep2,PhoneLoginStep1,PhoneLoginStep2,LogoutView
 
 urlpatterns = [
     path("adminlogin/", LoginView.as_view(), name="login"),
-    path("logout/", LogoutView.as_view(), name="login"),
+    path("logout/", LogoutView.as_view(), name="logout"),
 
     path("adminsdetails/", AdminDetailsView.as_view(), name="admin-list-create"),
     path("adminsdetails/<int:pk>/", AdminDetailsView.as_view(), name="admin-detail"),

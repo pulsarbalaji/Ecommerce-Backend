@@ -384,13 +384,20 @@ class EmailRegisterStep2(APIView):
         if serializer.is_valid():
             user = serializer.save()
 
-            # Issue JWT tokens
+            # Create related customer details if not already exists
+            if not hasattr(user, "customer_details"):
+                CustomerDetails.objects.create(
+                    auth=user,
+                    full_name=user.email.split("@")[0].title()
+                )
+
+            # Generate JWT tokens
             refresh = RefreshToken.for_user(user)
+            user_data = AuthSerializer(user).data  # same structure as login response
 
             return Response({
                 "message": "Account created successfully",
-                "user_id": user.id,
-                "email": user.email,
+                "user": user_data,
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
             }, status=status.HTTP_201_CREATED)
