@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
-from .serializers import OrderDetailsSerializer
+from rest_framework import generics, status
+from .serializers import OrderDetailsSerializer,OrderTrackingSerializer
 from .models import  Payment
 from products.models import OrderDetails
 from auth_model.models import CustomerDetails
@@ -10,8 +10,14 @@ import razorpay
 from decimal import Decimal
 from django.conf import settings
 from razorpay.errors import SignatureVerificationError
+from rest_framework.pagination import PageNumberPagination
 # Razorpay client
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+
+class OrderHistoryPagination(PageNumberPagination):
+    page_size = 16
+    page_size_query_param = "page_size"
+    max_page_size = 50
 
 class CreateOrderAPIView(APIView):
 
@@ -95,3 +101,55 @@ class VerifyPaymentAPIView(APIView):
             "message": "Payment verified successfully",
             "order_id": order.id
         })
+
+class OrderTrackingAPIView(APIView):
+    """
+    Track order by order_number.
+    """
+
+    def get(self, request, order_number):
+        try:
+            order = OrderDetails.objects.prefetch_related("items").get(order_number=order_number)
+            serializer = OrderTrackingSerializer(order)
+            return Response({
+                "message": "Order fetched successfully",
+                "success": True,
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
+
+        except OrderDetails.DoesNotExist:
+            return Response({
+                "message": "Order not found",
+                "success": False,
+                "data": None
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        except Exception as e:
+            return Response({
+                "message": str(e),
+                "success": False,
+                "data": None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+class CustomerOrderHistoryView(generics.ListAPIView):
+    serializer_class = OrderDetailsSerializer
+    pagination_class = OrderHistoryPagination
+
+    def get_queryset(self):
+        customer_id = self.kwargs.get("customer_id")
+        return OrderDetails.objects.filter(customer_id=customer_id).order_by("-created_at")
+
+    def list(self, request, *args, **kwargs):
+        customer_id = self.kwargs.get("customer_id")
+        queryset = self.get_queryset()
+
+        if not queryset.exists():
+            return Response(
+                {"message": "No orders found for this customer."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page, many=True)
+        return self.get_paginated_response(serializer.data)

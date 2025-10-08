@@ -1,10 +1,11 @@
 from django.urls import path
 from .views import (LoginView,SetNewPasswordView,AdminDetailsView,ForgotPasswordView,CustomerListView,
 GoogleRegisterView,GoogleLoginView,EmailRegisterStep1,EmailRegisterStep2,CustomerEmailAPIView,CustomerDetailsAPIView,
-PhoneRegisterStep1,PhoneRegisterStep2,PhoneLoginStep1,PhoneLoginStep2)
+PhoneRegisterStep1,PhoneRegisterStep2,PhoneLoginStep1,PhoneLoginStep2,LogoutView)
 
 urlpatterns = [
     path("adminlogin/", LoginView.as_view(), name="login"),
+    path("logout/", LogoutView.as_view(), name="login"),
 
     path("adminsdetails/", AdminDetailsView.as_view(), name="admin-list-create"),
     path("adminsdetails/<int:pk>/", AdminDetailsView.as_view(), name="admin-detail"),

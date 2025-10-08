@@ -9,6 +9,7 @@ from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import authenticate
+from rest_framework.authtoken.models import Token
 from .models import *
 from rest_framework.permissions import AllowAny
 from django.conf import settings
@@ -538,3 +539,30 @@ class PhoneLoginStep2(APIView):
             }, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class LogoutView(APIView):
+
+    def post(self, request):
+        # 1️⃣ Delete DRF token if it exists
+        try:
+            Token.objects.filter(user=request.user).delete()
+        except Exception:
+            pass  # no token exists, ignore
+
+        # 2️⃣ Blacklist JWT refresh token if provided
+        refresh_token = request.data.get("refresh")
+        if refresh_token:
+            try:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+            except Exception:
+                return Response(
+                    {"error": "Invalid refresh token"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # 3️⃣ Logout successful
+        return Response(
+            {"message": "Logged out successfully"},
+            status=status.HTTP_200_OK,
+        )
