@@ -25,4 +25,9 @@ urlpatterns = [
 
     path("contactus/", ContactusView.as_view(), name="Contactus-View"),
     path("contactus/<int:pk>/", ContactusView.as_view(), name="Contactus-View"),
+
+    path('offers/', OfferDetailsView.as_view(), name='offer-detail'),
+    path('offers/<int:pk>/', OfferDetailsView.as_view(), name='offer-detail'),
+
+    path('offers/category/<int:category_id>/', ProductsByCategory.as_view(), name='offers-by-category'),
 ]

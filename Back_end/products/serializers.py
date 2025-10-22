@@ -48,6 +48,7 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
             "customer",
             "order_number",
             "status",
+            "preferred_courier_service",
             "payment_method",
             "payment_status",
             "shipping_address",
@@ -100,3 +101,58 @@ class ContactusSerializer(serializers.ModelSerializer):
     class Meta:
         model = Contactus  
         fields = '__all__'
+
+class OfferDetailsSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.product_name', read_only=True)
+    category_name = serializers.CharField(source='category.category_name', read_only=True)
+
+    class Meta:
+        model = OfferDetails
+        fields = [
+            'id',
+            'product',
+            'category',
+            'product_name',
+            'category_name',
+            'offer_name',
+            'offer_percentage',
+            'is_active',
+            'created_at',
+            'updated_at'
+        ]
+
+class ProductWithOfferSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.category_name', read_only=True)
+    offer_price = serializers.SerializerMethodField()
+    offer_percentage = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "category_name",
+            "product_name",
+            "product_description",
+            "price",
+            "offer_percentage",
+            "offer_price",
+            "product_image",
+            "stock_quantity",
+            "is_available",
+            "average_rating",
+            "created_at",
+            "updated_at",
+            "category",
+            "created_by",
+        ]
+
+    def get_offer_price(self, obj):
+        offer = obj.offers.filter(is_active=True).first()
+        if offer and offer.offer_percentage:
+            discount = obj.price * (offer.offer_percentage / 100)
+            return round(obj.price - discount, 2)
+        return None
+
+    def get_offer_percentage(self, obj):
+        offer = obj.offers.filter(is_active=True).first()
+        return offer.offer_percentage if offer else None

@@ -179,6 +179,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
@@ -213,6 +214,8 @@ MEDIA_URL= 'media/'
 
 # FRONTEND_URL = 'https://projectmanagement.soucient.com'
 FRONTEND_URL = 'http://localhost:3000'
+
+FRONTEND_URL_CUSTOMER= 'http://localhost:3000'
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = config("EMAIL_HOST")

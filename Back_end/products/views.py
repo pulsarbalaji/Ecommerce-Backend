@@ -7,13 +7,14 @@ from reportlab.pdfgen import canvas
 from decimal import Decimal
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status,generics
 from django.template.loader import render_to_string
 from django.http import HttpResponse
 from xhtml2pdf import pisa
 from Back_end.pagination import CustomPageNumberPagination
 from django.utils.dateparse import parse_date
 from django.shortcuts import get_object_or_404
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from .models import *
 from .serializers import *
@@ -174,21 +175,47 @@ class ProductDetailsView(APIView):
             {"status": True, "message": "Product deleted successfully"},
             status=status.HTTP_200_OK,
         )
+class OrderPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
-class OrderDetailsView(APIView):
+
+class OrderDetailsView(generics.GenericAPIView):
     """
-    CRUD API for Orders (with items)
+    CRUD API for Orders (with pagination)
     """
+
+    serializer_class = OrderDetailsSerializer
+    pagination_class = OrderPagination
+
+    def get_queryset(self):
+        return OrderDetails.objects.all().order_by("-created_at")
+
+    def get(self, request, pk=None):
+        if pk:
+            order = get_object_or_404(OrderDetails, pk=pk)
+            serializer = self.get_serializer(order)
+            return Response({"status": True, "data": serializer.data})
+
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({"status": True, "data": serializer.data})
 
     def post(self, request):
-        serializer = OrderDetailsSerializer(data=request.data)
+        serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
             order = serializer.save()
             return Response(
                 {
                     "status": True,
                     "message": "Order created successfully",
-                    "data": OrderDetailsSerializer(order).data,
+                    "data": self.get_serializer(order).data,
                 },
                 status=status.HTTP_201_CREATED,
             )
@@ -197,24 +224,14 @@ class OrderDetailsView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    def get(self, request, pk=None):
-        if pk:
-            order = get_object_or_404(OrderDetails, pk=pk)
-            serializer = OrderDetailsSerializer(order)
-            return Response({"status": True, "data": serializer.data})
-
-        orders = OrderDetails.objects.all()
-        serializer = OrderDetailsSerializer(orders, many=True)
-        return Response({"status": True, "data": serializer.data})
-
     def put(self, request, pk=None):
         if not pk:
             return Response({"status": False, "message": "Order ID required"}, status=400)
 
         order = get_object_or_404(OrderDetails, pk=pk)
-        serializer = OrderDetailsSerializer(order, data=request.data, partial=True)
+        serializer = self.get_serializer(order, data=request.data, partial=True)
         if serializer.is_valid():
-            order = serializer.save()
+            serializer.save()
             return Response(
                 {"status": True, "message": "Order updated", "data": serializer.data},
                 status=200,
@@ -228,7 +245,7 @@ class OrderDetailsView(APIView):
         order = get_object_or_404(OrderDetails, pk=pk)
         order.delete()
         return Response({"status": True, "message": "Order deleted"}, status=200)
-
+    
 class InvoicePDFView(APIView):
     """
     Generate PDF invoice for an order using xhtml2pdf
@@ -279,42 +296,57 @@ class InvoicePDFView(APIView):
         return response
     
 
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
 class ProductListAPIView(APIView):
     permission_classes = [AllowAny]
+    pagination_class = StandardResultsSetPagination
 
     def get(self, request, id=None):
-        try:
-            if id:
-                product = Product.objects.filter(id=id).first()
-                if not product:
-                    return Response({
-                        "message": "Product not found",
-                        "success": False,
-                        "error": True,
-                        "data": None
-                    }, status=status.HTTP_404_NOT_FOUND)
+        offer_only = request.query_params.get("offer_only", "false").lower() == "true"
 
-                serializer = ProductSerializer(product)
+        # Single product by ID
+        if id:
+            try:
+                product = Product.objects.get(pk=id)
+            except Product.DoesNotExist:
                 return Response({
-                    "message": "Product fetched successfully",
-                    "status": True,
-                    "data": serializer.data
-                }, status=status.HTTP_200_OK)
+                    "success": False,
+                    "message": "Product not found",
+                    "data": None
+                }, status=status.HTTP_404_NOT_FOUND)
 
-            else:
-                products = Product.objects.all().order_by('-id')
-                paginator = CustomPageNumberPagination()
-                paginated_qs = paginator.paginate_queryset(products, request)
-                serializer = ProductSerializer(paginated_qs, many=True)
-                
-                return paginator.get_paginated_response(serializer.data)
-
-        except Exception as e:
+            serializer = ProductWithOfferSerializer(product)
             return Response({
-                "message": str(e),  # 
-                "status": False,
-                "data": None
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                "success": True,
+                "message": "Product fetched successfully",
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
+
+        # Multiple products
+        if offer_only:
+            products = Product.objects.filter(offers__is_active=True).distinct()
+        else:
+            products = Product.objects.all().order_by("-created_at")
+
+        paginator = self.pagination_class()
+        paginated_qs = paginator.paginate_queryset(products, request)
+        serializer = ProductWithOfferSerializer(paginated_qs, many=True)
+
+        # Custom paginated response like your ProductFilter
+        return Response({
+            "success": True,
+            "message": "Data fetched successfully",
+            "total_items": paginator.page.paginator.count,
+            "total_pages": paginator.page.paginator.num_pages,
+            "current_page": paginator.page.number,
+            "next": paginator.get_next_link(),
+            "previous": paginator.get_previous_link(),
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
         
 class CategoryListAPIView(APIView):
     permission_classes = [AllowAny]
@@ -365,7 +397,7 @@ class ProductFilter(APIView):
             # Pagination
             paginator = CustomPageNumberPagination()
             paginated_qs = paginator.paginate_queryset(products, request)
-            serializer = ProductSerializer(paginated_qs, many=True)
+            serializer = ProductWithOfferSerializer(paginated_qs, many=True)
 
             return paginator.get_paginated_response(serializer.data)
 
@@ -450,3 +482,70 @@ class OrderStatusUpdateView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+class OfferPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class OfferDetailsView(APIView):
+
+    def get(self, request, pk=None):
+        if pk:
+            offer = get_object_or_404(OfferDetails, pk=pk)
+            serializer = OfferDetailsSerializer(offer)
+            return Response({"status": True, "data": serializer.data}, status=status.HTTP_200_OK)
+
+        offers = OfferDetails.objects.all().order_by('-created_at')
+        paginator = OfferPagination()
+        result_page = paginator.paginate_queryset(offers, request)
+        serializer = OfferDetailsSerializer(result_page, many=True)
+        return paginator.get_paginated_response({"status": True, "data": serializer.data})
+
+    def post(self, request):
+        serializer = OfferDetailsSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"status": True, "message": "Offer created successfully", "data": serializer.data}, status=status.HTTP_201_CREATED)
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk):
+        offer = get_object_or_404(OfferDetails, pk=pk)
+        serializer = OfferDetailsSerializer(offer, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"status": True, "message": "Offer updated successfully", "data": serializer.data}, status=status.HTTP_200_OK)
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        offer = get_object_or_404(OfferDetails, pk=pk)
+        serializer = OfferDetailsSerializer(offer, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"status": True, "message": "Offer partially updated", "data": serializer.data}, status=status.HTTP_200_OK)
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        offer = get_object_or_404(OfferDetails, pk=pk)
+        offer.delete()
+        return Response({"status": True, "message": "Offer deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+    
+class ProductsByCategory(APIView):
+
+    def get(self, request, category_id):
+        # Fetch products with offers in this category
+        products = Product.objects.filter(category_id=category_id,)
+
+        if not products.exists():
+            return Response({
+                "status": False,
+                "message": "No products  found for this category"
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ProductSerializer(products, many=True)
+        return Response({
+            "status": True,
+            "message": "Products  retrieved successfully",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)

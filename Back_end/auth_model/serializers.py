@@ -156,7 +156,7 @@ class VerifyPhoneOTPSerializer(serializers.Serializer):
         }
     
 class PhoneLoginOTPSerializer(serializers.Serializer):
-    phone = serializers.CharField(max_length=15)
+    phone = serializers.CharField(max_length=10)
 
     def create(self, validated_data):
         phone = validated_data["phone"]
@@ -165,7 +165,7 @@ class PhoneLoginOTPSerializer(serializers.Serializer):
         try:
             user = Auth.objects.get(phone=phone)
         except Auth.DoesNotExist:
-            raise serializers.ValidationError("Phone number not registered")
+            raise serializers.ValidationError({"error":"Phone number not registered"})
 
         # Generate OTP
         otp = str(random.randint(100000, 999999))

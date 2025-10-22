@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import (LoginView,SetNewPasswordView,AdminDetailsView,ForgotPasswordView,CustomerListView,
+from .views import (LoginView,SetNewPasswordView,AdminDetailsView,ForgotPasswordView,CustomerListView,ForgotPasswordCustomer,
 GoogleRegisterView,GoogleLoginView,EmailRegisterStep1,EmailRegisterStep2,CustomerEmailAPIView,CustomerDetailsAPIView,
 PhoneRegisterStep1,PhoneRegisterStep2,PhoneLoginStep1,PhoneLoginStep2,LogoutView)
 
@@ -12,6 +12,7 @@ urlpatterns = [
 
     path("set-password/", SetNewPasswordView.as_view(), name="set-password"),
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
+    path("forgot-password-customer/", ForgotPasswordCustomer.as_view(), name="forgot-password"),
 
     path("customerslist/", CustomerListView.as_view(), name="customer-list"),
     path("customerslist/<int:pk>/", CustomerListView.as_view(), name="customer-detail"),

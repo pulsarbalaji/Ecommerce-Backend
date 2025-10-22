@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status,generics
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_decode
@@ -14,6 +14,7 @@ from .models import *
 from rest_framework.permissions import AllowAny
 from django.conf import settings
 import requests
+from rest_framework.pagination import PageNumberPagination
 from twilio.rest import Client
 from google.oauth2 import id_token
 import firebase_admin
@@ -200,28 +201,83 @@ class ForgotPasswordView(APIView):
             status=status.HTTP_200_OK
         )
     
+class ForgotPasswordCustomer(APIView):
+    permission_classes = [AllowAny]
+    def post(self, request):
+        email = request.data.get("email")
+        if not email:
+            return Response(
+                {"status": False, "message": "Email is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-class CustomerListView(APIView):
+        try:
+            user = Auth.objects.get(email=email)
+        except Auth.DoesNotExist:
+            return Response(
+                {"status": False, "message": "User with this email does not exist"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Generate reset link
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        reset_link = f"{settings.FRONTEND_URL_CUSTOMER}/reset-password/{uid}/{token}/"
+
+        # Send email
+        send_mail(
+            subject="Password Reset Request",
+            message=f"Hi,\n\nClick the link below to reset your password:\n{reset_link}",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+
+        return Response(
+            {"status": True, "message": "Password reset email sent successfully"},
+            status=status.HTTP_200_OK
+        )
+    
+class CustomerPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class CustomerListView(generics.GenericAPIView):
     """
-    API for getting all customers or a single customer by ID
+    API for getting all customers or a single customer by ID (with pagination)
     """
+
+    serializer_class = CustomerSerializer
+    pagination_class = CustomerPagination
+
+    def get_queryset(self):
+        return CustomerDetails.objects.all().order_by("-created_at")
 
     def get(self, request, pk=None):
         if pk:
             # Get single customer by ID
             customer = get_object_or_404(CustomerDetails, pk=pk)
-            serializer = CustomerSerializer(customer)
-            return Response({
-                "status": True,
-                "data": serializer.data
-            }, status=status.HTTP_200_OK)
-        
-        customers = CustomerDetails.objects.all().order_by("-created_at")
-        serializer = CustomerSerializer(customers, many=True)
-        return Response({
-            "status": True,
-            "data": serializer.data
-        }, status=status.HTTP_200_OK)
+            serializer = self.get_serializer(customer)
+            return Response(
+                {"status": True, "data": serializer.data},
+                status=status.HTTP_200_OK,
+            )
+
+        # Paginated list of customers
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        # If pagination disabled or not applicable
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(
+            {"status": True, "data": serializer.data},
+            status=status.HTTP_200_OK,
+        )
     
 
 if not firebase_admin._apps:
@@ -467,7 +523,6 @@ class PhoneRegisterStep1(APIView):
         serializer = PhoneOTPSerializer(data=request.data)
         if serializer.is_valid():
             otp_entry = serializer.save()
-            print(otp_entry.phone,"Test")
 
             # Send WhatsApp OTP via Twilio
             client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -483,24 +538,40 @@ class PhoneRegisterStep1(APIView):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 class PhoneRegisterStep2(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = VerifyPhoneOTPSerializer(data=request.data)
         if serializer.is_valid():
-            data = serializer.save()
+            data = serializer.save()  # returns {"user": user, "access": ..., "refresh": ...}
+            user = data.get("user")  # extract actual Auth instance
+
+            # ✅ Auto-create related customer record if missing
+            if not hasattr(user, "customer_details"):
+                CustomerDetails.objects.create(
+                    auth=user,
+                    full_name=user.phone if hasattr(user, "phone") else str(user),  # safe fallback
+                )
+
+            # ✅ Prepare tokens & serialized user
+            access = data.get("access")
+            refresh = data.get("refresh")
+            user_data = AuthSerializer(user).data
+
             return Response({
-                "message": "Phone verified successfully",
-                "user_id": data["user"].id,
-                "phone": data["user"].phone,
-                "access": data["access"],
-                "refresh": data["refresh"]
-            }, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+                "status": True,
+                "message": "Phone verified and registered successfully",
+                "user": user_data,
+                "access": access,
+                "refresh": refresh,
+            }, status=status.HTTP_201_CREATED)
+
+        return Response({
+            "status": False,
+            "errors": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
 
 class PhoneLoginStep1(APIView):
     permission_classes = [AllowAny]
@@ -523,7 +594,11 @@ class PhoneLoginStep1(APIView):
                 "session_id": otp_entry.session_id
             }, status=status.HTTP_200_OK)
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            "status": False,
+            "errors": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
 
 class PhoneLoginStep2(APIView):
     permission_classes = [AllowAny]
