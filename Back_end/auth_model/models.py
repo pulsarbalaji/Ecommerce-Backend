@@ -71,6 +71,7 @@ class Auth(AbstractBaseUser, PermissionsMixin):
 
     class Meta:
         db_table = "auth_details"
+        
     def __str__(self):
         return self.email if self.email else self.phone  
     
