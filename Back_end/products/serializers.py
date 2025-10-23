@@ -148,14 +148,18 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
 
     def get_offer_price(self, obj):
         offer = obj.offers.filter(is_active=True).first()
-        if offer and offer.offer_percentage:
+        if not offer:
+            return None  # ✅ explicitly return null if inactive or no offer
+        if offer.offer_percentage:
             discount = obj.price * (offer.offer_percentage / 100)
             return round(obj.price - discount, 2)
         return None
 
     def get_offer_percentage(self, obj):
         offer = obj.offers.filter(is_active=True).first()
-        return offer.offer_percentage if offer else None
+        if not offer or not offer.offer_percentage:
+            return None  # ✅ explicitly return null if inactive or no offer
+        return offer.offer_percentage
     
 
 #Dashboard Serializers

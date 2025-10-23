@@ -472,7 +472,6 @@ class OrderStatusUpdateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ✅ Correct field name here
         order.status = order_status
         order.save()
 

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from decimal import Decimal
 from .models import Payment
-from products.models import OrderDetails, OrderItem, Product
+from products.models import OrderDetails, OrderItem
 from auth_model.models import CustomerDetails
 
 
@@ -18,7 +18,6 @@ class OrderItemSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data["total"] = Decimal(validated_data["price"]) * validated_data["quantity"]
         return super().create(validated_data)
-
 
 # -------------------------------
 # Order Details Serializer

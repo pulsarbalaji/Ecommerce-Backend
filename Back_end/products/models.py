@@ -120,6 +120,9 @@ class OrderItem(models.Model):
 
     def __str__(self):
         return f"{self.product.Product_name} x {self.quantity}"
+    
+    class Meta:
+        db_table = "order_items"
 
 class Invoice(models.Model):
     order = models.OneToOneField("OrderDetails", on_delete=models.CASCADE, related_name="invoice")
@@ -138,7 +141,7 @@ class Invoice(models.Model):
         return f"Invoice {self.invoice_number} for Order {self.order.order_number}"
 
     class Meta:
-        db_table = "invoice"
+        db_table = "invoice_details"
         ordering = ["-generated_at"]
 
 class Contactus(models.Model):
