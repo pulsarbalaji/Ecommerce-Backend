@@ -30,4 +30,6 @@ urlpatterns = [
     path('offers/<int:pk>/', OfferDetailsView.as_view(), name='offer-detail'),
 
     path('offers/category/<int:category_id>/', ProductsByCategory.as_view(), name='offers-by-category'),
+
+    path('Dashboard/', DashboardAPIView.as_view(), name='offer-detail'),
 ]

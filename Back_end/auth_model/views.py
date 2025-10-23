@@ -305,12 +305,18 @@ class GoogleRegisterView(APIView):
             if not email:
                 return Response({"error": "Email not found in token"}, status=status.HTTP_400_BAD_REQUEST)
 
-            # 🔑 Get or create Auth user
-            user, created = Auth.objects.get_or_create(email=email, defaults={"login_method": "google"})
+            if Auth.objects.filter(email=email).exists():
+                return Response(
+                    {"error": "This email is already registered. Please log in instead."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ Create new Auth user
+            user = Auth.objects.create(email=email, login_method="google")
 
             # 🔑 If user is newly created, also create CustomerDetails
-            if created:
-                CustomerDetails.objects.create(
+            
+            CustomerDetails.objects.create(
                     auth=user,
                     full_name=full_name if full_name else decoded_token.get("name", ""),
                     address=address,
@@ -366,18 +372,21 @@ class GoogleLoginView(APIView):
                 return Response({
                     "message": "Email not found in token"
                 }, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                user = Auth.objects.get(email=email)
+            except Auth.DoesNotExist:
+                return Response(
+                    {"message": "This email is not registered. Please register first."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-            # Get or create Auth user
-            user, created = Auth.objects.get_or_create(
-                email=email,
-                defaults={"login_method": "google"}
-            )
-
-            # Ensure login method is google
             if user.login_method != "google":
-                user.login_method = "google"
-                user.save()
-
+                return Response(
+                    {"message": "This account is registered using a different login method."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
             # Create or update CustomerDetails
             customer, c_created = CustomerDetails.objects.get_or_create(auth=user)
             if c_created:
@@ -538,6 +547,7 @@ class PhoneRegisterStep1(APIView):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
 class PhoneRegisterStep2(APIView):
     permission_classes = [AllowAny]
 

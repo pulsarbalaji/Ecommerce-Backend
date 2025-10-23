@@ -1,16 +1,17 @@
 import json
 from django.http import HttpResponse
 from django.utils.timezone import now, timedelta
-from django.db.models import Sum, Count
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from decimal import Decimal
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from collections import OrderedDict
 from rest_framework import status,generics
 from django.template.loader import render_to_string
 from django.http import HttpResponse
 from xhtml2pdf import pisa
+from django.db.models import DecimalField,Sum, F,ExpressionWrapper
 from Back_end.pagination import CustomPageNumberPagination
 from django.utils.dateparse import parse_date
 from django.shortcuts import get_object_or_404
@@ -18,6 +19,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from .models import *
 from .serializers import *
+from django.utils import timezone
+from django.db.models.functions import TruncDate,Coalesce,Cast
 
 
 class CategoryDetailsView(APIView):
@@ -549,3 +552,115 @@ class ProductsByCategory(APIView):
             "message": "Products  retrieved successfully",
             "data": serializer.data
         }, status=status.HTTP_200_OK)
+
+
+class DashboardAPIView(APIView):
+    """
+    Admin Dashboard API
+    """
+
+    def get(self, request):
+        try:
+            now = timezone.now()  # timezone-aware
+            last_7_days = now - timedelta(days=6)
+
+            # ---------------- Stats ----------------
+            total_sales = OrderDetails.objects.filter(payment_status__iexact="success")\
+                .aggregate(total=Coalesce(Sum("total_amount"), Decimal("0.00"), output_field=DecimalField(max_digits=20, decimal_places=2)))["total"]
+
+            stats = {
+                "total_sales": total_sales,
+                "total_orders": OrderDetails.objects.count(),
+                "total_customers": CustomerDetails.objects.count(),
+                "total_products": Product.objects.count(),
+                "pending_orders": OrderDetails.objects.filter(status__iexact="pending").count(),
+                "cancelled_orders": OrderDetails.objects.filter(status__iexact="cancelled").count(),
+            }
+
+            # ---------------- Sales Chart (last 7 days) ----------------
+            sales_qs = (
+                OrderDetails.objects.filter(payment_status__iexact="success", ordered_at__date__gte=last_7_days.date())
+                .annotate(date=TruncDate("ordered_at"))
+                .values("date")
+                .annotate(
+                    sales=Coalesce(
+                        Sum("total_amount"), 
+                        Decimal("0.00"), 
+                        output_field=DecimalField(max_digits=20, decimal_places=2)
+                    )
+                )
+                .order_by("date")
+            )
+
+            # Fill missing days with 0
+            sales_chart_dict = OrderedDict()
+            for i in range(7):
+                day = (now - timedelta(days=6 - i)).date()
+                sales_chart_dict[day] = Decimal("0.00")
+
+            for sale in sales_qs:
+                sales_chart_dict[sale["date"]] = sale["sales"]
+
+            sales_chart = [{"date": d, "sales": s} for d, s in sales_chart_dict.items()]
+
+            # ---------------- Top Products ----------------
+            top_products_qs = (
+                OrderItem.objects.filter(order__payment_status__iexact="success")
+                .values("product_id", "product__product_name")
+                .annotate(
+                    total_sold=Coalesce(Sum("quantity"), 0),
+                    total_revenue=Coalesce(Sum(F("quantity") * F("price"), output_field=DecimalField(max_digits=20, decimal_places=2)), Decimal("0.00"))
+                )
+                .order_by("-total_sold")[:5]
+            )
+
+            # ---------------- Recent Orders ----------------
+            recent_orders_qs = (
+                OrderDetails.objects.select_related("customer", "customer__auth")
+                .only(
+                    "order_number",
+                    "total_amount",
+                    "status",
+                    "ordered_at",
+                    "customer__full_name",
+                    "customer__auth__email",
+                )
+                .order_by("-ordered_at")[:5]
+            )
+
+            # ---------------- Low Stock Products ----------------
+            low_stock_qs = (
+                Product.objects.filter(stock_quantity__lte=5)
+                .only("id", "product_name", "stock_quantity")
+                .order_by("stock_quantity")[:5]
+            )
+
+            # ---------------- New Customers (last 7 days) ----------------
+            new_customers_qs = (
+                CustomerDetails.objects.select_related("auth")
+                .filter(auth__created_at__gte=last_7_days)
+                .order_by("-auth__created_at")[:5]
+            )
+
+            # ---------------- Serialize ----------------
+            data = {
+                "stats": DashboardStatsSerializer(stats).data,
+                "sales_chart": SalesChartSerializer(sales_chart, many=True).data,
+                "top_products": TopProductSerializer(top_products_qs, many=True).data,
+                "recent_orders": RecentOrderSerializer(recent_orders_qs, many=True).data,
+                "low_stock_products": LowStockProductSerializer(low_stock_qs, many=True).data,
+                "new_customers": NewCustomerSerializer(new_customers_qs, many=True).data,
+            }
+
+            return Response({
+                "status": True,
+                "message": "Dashboard data fetched successfully",
+                "data": data
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({
+                "status": False,
+                "message": f"Something went wrong: {str(e)}",
+                "data": {}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

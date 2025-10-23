@@ -20,6 +20,9 @@ class LoginSerializer(serializers.Serializer):
 
         if not check_password(data['password'], user.password):
             raise serializers.ValidationError("Invalid email or password")
+        
+        if not user.is_staff:
+            raise serializers.ValidationError("You are not authorized to access this section")
 
         data['user'] = user
         return data
@@ -117,9 +120,19 @@ class PhoneOTPSerializer(serializers.ModelSerializer):
         model = PhoneOTP
         fields = ['phone']
 
+    def validate_phone(self, value):
+        # ✅ Check if phone already exists in Auth table
+        if Auth.objects.filter(phone=value).exists():
+            raise serializers.ValidationError("This phone number is already registered.")
+        return value
+
     def create(self, validated_data):
         phone = validated_data['phone']
         otp = str(random.randint(100000, 999999))
+
+        # Optional: remove old OTPs for same phone
+        PhoneOTP.objects.filter(phone=phone).delete()
+
         otp_entry = PhoneOTP.objects.create(phone=phone, otp=otp)
         return otp_entry
 

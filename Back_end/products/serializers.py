@@ -156,3 +156,60 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
     def get_offer_percentage(self, obj):
         offer = obj.offers.filter(is_active=True).first()
         return offer.offer_percentage if offer else None
+    
+
+#Dashboard Serializers
+
+class DashboardStatsSerializer(serializers.Serializer):
+    total_sales = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_orders = serializers.IntegerField()
+    total_customers = serializers.IntegerField()
+    total_products = serializers.IntegerField()
+    pending_orders = serializers.IntegerField()
+    cancelled_orders = serializers.IntegerField()
+
+# Sales Chart Serializer
+class SalesChartSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    sales = serializers.DecimalField(max_digits=15, decimal_places=2)
+
+# Top Products Serializer
+class TopProductSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField()
+    product_name = serializers.CharField(source="product__product_name")
+    total_sold = serializers.IntegerField()
+    total_revenue = serializers.DecimalField(max_digits=15, decimal_places=2)
+
+# Recent Orders Serializer
+class RecentOrderSerializer(serializers.ModelSerializer):
+    customer_name = serializers.SerializerMethodField()
+    customer_email = serializers.SerializerMethodField()
+    order_status = serializers.CharField(source="status")  # map `status` field
+
+    class Meta:
+        model = OrderDetails
+        fields = ["order_number", "total_amount", "order_status", "ordered_at", "customer_name", "customer_email"]
+
+    def get_customer_name(self, obj):
+        return obj.customer.full_name
+
+    def get_customer_email(self, obj):
+        return obj.customer.auth.email if obj.customer.auth else None
+
+
+# Low Stock Products Serializer
+class LowStockProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = ["id", "product_name", "stock_quantity"]
+
+# New Customers Serializer
+class NewCustomerSerializer(serializers.ModelSerializer):
+    email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomerDetails
+        fields = ["id", "full_name", "email", "created_at"]
+
+    def get_email(self, obj):
+        return obj.auth.email if obj.auth else None
