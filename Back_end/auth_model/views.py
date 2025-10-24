@@ -45,6 +45,7 @@ class LoginView(APIView):
                     "full_name": details.full_name,
                     "role": details.role,
                     "phone": details.phone,
+                    "email": user.email
                 }
             except AdminDetails.DoesNotExist:
                 admin_data = {}

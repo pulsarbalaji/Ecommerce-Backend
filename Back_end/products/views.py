@@ -629,10 +629,13 @@ class DashboardAPIView(APIView):
 
             # ---------------- Low Stock Products ----------------
             low_stock_qs = (
-                Product.objects.filter(stock_quantity__lte=5)
-                .only("id", "product_name", "stock_quantity")
-                .order_by("stock_quantity")[:5]
-            )
+                                Product.objects
+                                .filter(stock_quantity__lte=5)
+                                .select_related("category")  
+                                .only("id", "product_name", "stock_quantity", "category__category_name")
+                                .order_by("stock_quantity")[:5]
+                            )
+
 
             # ---------------- New Customers (last 7 days) ----------------
             new_customers_qs = (

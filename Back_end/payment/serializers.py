@@ -3,7 +3,7 @@ from decimal import Decimal
 from .models import Payment
 from products.models import OrderDetails, OrderItem
 from auth_model.models import CustomerDetails
-
+from django.db import transaction
 
 # -------------------------------
 # Order Item Serializer
@@ -47,32 +47,47 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["subtotal", "tax", "total_amount", "status", "payment_status"]
 
+    @transaction.atomic  # ✅ all operations below happen in one DB transaction
     def create(self, validated_data):
         items_data = validated_data.pop("items")
 
         # --- Calculate subtotal, tax, and total ---
         subtotal = sum(Decimal(item["price"]) * item["quantity"] for item in items_data)
         tax_total = sum(Decimal(item.get("tax", 0)) for item in items_data)
+        shipping_cost = Decimal(validated_data.get("shipping_cost", 0))
 
         validated_data["subtotal"] = subtotal
         validated_data["tax"] = tax_total
-        validated_data["total_amount"] = subtotal + tax_total + Decimal(
-            validated_data.get("shipping_cost", 0)
-        )
+        validated_data["total_amount"] = subtotal + tax_total + shipping_cost
 
+        # --- Create order ---
         order = OrderDetails.objects.create(**validated_data)
 
-        # --- Create order items ---
+        # --- Create order items & update stock ---
         for item in items_data:
+            product = item["product"]
+
+            # ✅ Check stock availability
+            if product.stock_quantity < item["quantity"]:
+                raise serializers.ValidationError(
+                    f"Insufficient stock for product: {product.product_name}"
+                )
+
+            # ✅ Create order item
             OrderItem.objects.create(
                 order=order,
-                product=item["product"],
+                product=product,
                 quantity=item["quantity"],
                 price=Decimal(item["price"]),
                 tax=Decimal(item.get("tax", 0)),
                 total=Decimal(item["price"]) * item["quantity"],
             )
 
+            # ✅ Reduce product stock
+            product.stock_quantity -= item["quantity"]
+            product.save(update_fields=["stock_quantity"])
+
+        # ✅ Return order instance
         return order
 
 

@@ -203,9 +203,15 @@ class RecentOrderSerializer(serializers.ModelSerializer):
 
 # Low Stock Products Serializer
 class LowStockProductSerializer(serializers.ModelSerializer):
+    category_name = serializers.SerializerMethodField()
+
     class Meta:
         model = Product
-        fields = ["id", "product_name", "stock_quantity"]
+        fields = ["id", "product_name", "category_name", "stock_quantity"]
+
+    def get_category_name(self, obj):
+        return obj.category.category_name if obj.category else None
+
 
 # New Customers Serializer
 class NewCustomerSerializer(serializers.ModelSerializer):
