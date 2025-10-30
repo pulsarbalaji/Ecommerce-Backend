@@ -23,161 +23,150 @@ from django.utils import timezone
 from django.db.models.functions import TruncDate,Coalesce,Cast
 
 
+def normalize_category_name(name: str):
+
+    return name.strip().lower().replace(" ", "_")
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
 class CategoryDetailsView(APIView):
-    """
-    CRUD API for Category
-    """
 
     def post(self, request):
-        """Create a new category"""
         serializer = CategorySerializer(data=request.data)
         if serializer.is_valid():
+            # Check uniqueness ignoring case
+            normalized_name = serializer.validated_data["category_name"]
+            if Category.objects.filter(category_name__iexact=normalized_name).exists():
+                return Response(
+                    {"status": False, "message": "Category with this name already exists"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             serializer.save()
             return Response(
-                {
-                    "status": True,
-                    "message": "Category created successfully",
-                    "data": serializer.data,
-                },
+                {"status": True, "message": "Category created successfully", "data": serializer.data},
                 status=status.HTTP_201_CREATED,
             )
-        return Response(
-            {"status": False, "errors": serializer.errors},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     def get(self, request, pk=None):
-        """Get all categories or a single category by ID"""
         if pk:
             category = get_object_or_404(Category, pk=pk)
             serializer = CategorySerializer(category)
-            return Response(
-                {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
-            )
-
+            return Response({"status": True, "data": serializer.data}, status=status.HTTP_200_OK)
         categories = Category.objects.all().order_by("-created_at")
         serializer = CategorySerializer(categories, many=True)
-        return Response(
-            {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
-        )
+        return Response({"status": True, "data": serializer.data}, status=status.HTTP_200_OK)
 
     def put(self, request, pk=None):
-        """Update category details"""
         if not pk:
-            return Response(
-                {"status": False, "message": "Category ID is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"status": False, "message": "Category ID is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         category = get_object_or_404(Category, pk=pk)
         serializer = CategorySerializer(category, data=request.data, partial=True)
         if serializer.is_valid():
+            normalized_name = serializer.validated_data.get("category_name")
+            if normalized_name and Category.objects.filter(category_name__iexact=normalized_name).exclude(pk=pk).exists():
+                return Response(
+                    {"status": False, "message": "Category with this name already exists"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             serializer.save()
-            return Response(
-                {
-                    "status": True,
-                    "message": "Category updated successfully",
-                    "data": serializer.data,
-                },
-                status=status.HTTP_200_OK,
-            )
-        return Response(
-            {"status": False, "errors": serializer.errors},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+            return Response({"status": True, "message": "Category updated successfully", "data": serializer.data}, status=status.HTTP_200_OK)
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk=None):
-        """Delete category by ID"""
         if not pk:
-            return Response(
-                {"status": False, "message": "Category ID is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+            return Response({"status": False, "message": "Category ID is required"}, status=status.HTTP_400_BAD_REQUEST)
         category = get_object_or_404(Category, pk=pk)
         category.delete()
-        return Response(
-            {"status": True, "message": "Category deleted successfully"},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"status": True, "message": "Category deleted successfully"}, status=status.HTTP_200_OK)
 
-    
 
 class ProductDetailsView(APIView):
-    """
-    CRUD API for Category
-    """
 
     def post(self, request):
-        """Create a new category"""
         serializer = ProductSerializer(data=request.data)
         if serializer.is_valid():
+            product_name = serializer.validated_data.get("product_name")
+
+            # ✅ Unique check (case-insensitive)
+            if Product.objects.filter(product_name__iexact=product_name).exists():
+                return Response(
+                    {"status": False, "message": "Product with this name already exists"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             serializer.save()
             return Response(
-                {
-                    "status": True,
-                    "message": "Product created successfully",
-                    "data": serializer.data,
-                },
-                status=status.HTTP_201_CREATED,
+                {"status": True, "message": "Product created successfully", "data": serializer.data},
+                status=status.HTTP_201_CREATED
             )
-        return Response(
-            {"status": False, "errors": serializer.errors},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+
+        # ✅ Return validation errors
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    pagination_class = StandardResultsSetPagination
 
     def get(self, request, pk=None):
+        try:
+            if pk:
+                product = get_object_or_404(Product, pk=pk)
+                serializer = ProductSerializer(product)
+                return Response(
+                    {"status": True, "data": serializer.data},
+                    status=status.HTTP_200_OK,
+                )
 
-        if pk:
-            product = get_object_or_404(Product, pk=pk)
-            serializer = ProductSerializer(product)
-            return Response(
-                {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
+            products = Product.objects.all().order_by("-created_at")
+
+            # ✅ Apply pagination
+            paginator = self.pagination_class()
+            paginated_products = paginator.paginate_queryset(products, request)
+
+            serializer = ProductSerializer(paginated_products, many=True)
+
+            return paginator.get_paginated_response(
+                {"status": True, "data": serializer.data}
             )
 
-        categories = Product.objects.all().order_by("-created_at")
-        serializer = ProductSerializer(categories, many=True)
-        return Response(
-            {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
-        )
-
+        except Exception as e:
+            return Response(
+                {"status": False, "message": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
     def put(self, request, pk=None):
         if not pk:
-            return Response(
-                {"status": False, "message": "Product ID is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"status": False, "message": "Product ID is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         product = get_object_or_404(Product, pk=pk)
         serializer = ProductSerializer(product, data=request.data, partial=True)
         if serializer.is_valid():
+            product_name = serializer.validated_data.get("product_name")
+
+            # ✅ Unique check excluding current product
+            if product_name and Product.objects.filter(product_name__iexact=product_name).exclude(pk=pk).exists():
+                return Response(
+                    {"status": False, "message": "Product with this name already exists"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             serializer.save()
-            return Response(
-                {
-                    "status": True,
-                    "message": "Product updated successfully",
-                    "data": serializer.data,
-                },
-                status=status.HTTP_200_OK,
-            )
-        return Response(
-            {"status": False, "errors": serializer.errors},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+            return Response({"status": True, "message": "Product updated successfully", "data": serializer.data}, status=status.HTTP_200_OK)
+
+        return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk=None):
         if not pk:
-            return Response(
-                {"status": False, "message": "Product ID is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"status": False, "message": "Product ID is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         product = get_object_or_404(Product, pk=pk)
         product.delete()
-        return Response(
-            {"status": True, "message": "Product deleted successfully"},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"status": True, "message": "Product deleted successfully"}, status=status.HTTP_200_OK)
+
 class OrderPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = "page_size"
@@ -298,12 +287,6 @@ class InvoicePDFView(APIView):
 
         return response
     
-
-class StandardResultsSetPagination(PageNumberPagination):
-    page_size = 10
-    page_size_query_param = "page_size"
-    max_page_size = 100
-
 class ProductListAPIView(APIView):
     permission_classes = [AllowAny]
     pagination_class = StandardResultsSetPagination
@@ -494,22 +477,52 @@ class OfferPagination(PageNumberPagination):
 class OfferDetailsView(APIView):
 
     def get(self, request, pk=None):
+        today = timezone.now().date()
+
+        # ✅ Deactivate expired offers
+        OfferDetails.objects.filter(end_date__lt=today, is_active=True).update(is_active=False)
+
+        # ✅ Activate offers that are now valid (current date within range)
+        OfferDetails.objects.filter(
+            start_date__lte=today,
+            end_date__gte=today,
+            is_active=False,
+        ).update(is_active=True)
+
         if pk:
             offer = get_object_or_404(OfferDetails, pk=pk)
             serializer = OfferDetailsSerializer(offer)
             return Response({"status": True, "data": serializer.data}, status=status.HTTP_200_OK)
 
+        # ✅ Paginate all offers (newest first)
         offers = OfferDetails.objects.all().order_by('-created_at')
         paginator = OfferPagination()
         result_page = paginator.paginate_queryset(offers, request)
         serializer = OfferDetailsSerializer(result_page, many=True)
-        return paginator.get_paginated_response({"status": True, "data": serializer.data})
+
+        return paginator.get_paginated_response({
+            "status": True,
+            "message": "Offers retrieved successfully.",
+            "data": serializer.data,
+        })
 
     def post(self, request):
-        serializer = OfferDetailsSerializer(data=request.data)
+        data = request.data
+
+        # ✅ Accept both single object and list of objects
+        if isinstance(data, list):
+            serializer = OfferDetailsSerializer(data=data, many=True)
+        else:
+            serializer = OfferDetailsSerializer(data=data)
+
         if serializer.is_valid():
             serializer.save()
-            return Response({"status": True, "message": "Offer created successfully", "data": serializer.data}, status=status.HTTP_201_CREATED)
+            return Response({
+                "status": True,
+                "message": "Offer(s) created successfully",
+                "data": serializer.data
+            }, status=status.HTTP_201_CREATED)
+
         return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     def put(self, request, pk):
@@ -517,7 +530,11 @@ class OfferDetailsView(APIView):
         serializer = OfferDetailsSerializer(offer, data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response({"status": True, "message": "Offer updated successfully", "data": serializer.data}, status=status.HTTP_200_OK)
+            return Response({
+                "status": True,
+                "message": "Offer updated successfully",
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
         return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     def patch(self, request, pk):
@@ -525,38 +542,76 @@ class OfferDetailsView(APIView):
         serializer = OfferDetailsSerializer(offer, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response({"status": True, "message": "Offer partially updated", "data": serializer.data}, status=status.HTTP_200_OK)
+            return Response({
+                "status": True,
+                "message": "Offer partially updated",
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
         return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
         offer = get_object_or_404(OfferDetails, pk=pk)
-        offer.delete()
-        return Response({"status": True, "message": "Offer deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
-    
-class ProductsByCategory(APIView):
-
-    def get(self, request, category_id):
-        # Fetch products with offers in this category
-        products = Product.objects.filter(category_id=category_id,)
-
-        if not products.exists():
+        try:
+            offer.delete()
+            return Response({"status": True, "message": "Offer deleted successfully"}, status=status.HTTP_200_OK)
+        except Exception as e:
             return Response({
                 "status": False,
-                "message": "No products  found for this category"
-            }, status=status.HTTP_404_NOT_FOUND)
+                "message": f"Failed to delete offer: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
+        
+# views.py
+class ProductsByCategory(APIView):
+    def get(self, request, category_id):
+        try:
+            today = timezone.now().date()
 
-        serializer = ProductSerializer(products, many=True)
-        return Response({
-            "status": True,
-            "message": "Products  retrieved successfully",
-            "data": serializer.data
-        }, status=status.HTTP_200_OK)
+            # ✅ Get IDs of products with currently active offers
+            active_offer_product_ids = OfferDetails.objects.filter(
+                category_id=category_id,
+                is_active=True,
+                start_date__lte=today,
+                end_date__gte=today,
+            ).values_list("product_id", flat=True)
 
+            # ✅ Filter products in this category WITHOUT active offers
+            products = (
+                Product.objects.filter(category_id=category_id)
+                .exclude(id__in=active_offer_product_ids)
+                .only("id", "product_name", "category__category_name")
+            )
+
+            if not products.exists():
+                return Response(
+                    {
+                        "status": False,
+                        "message": "No available products without active offers in this category.",
+                        "data": [],
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            serializer = FillterProductSerializer(products, many=True)
+            return Response(
+                {
+                    "status": True,
+                    "message": "Products retrieved successfully.",
+                    "data": serializer.data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception as e:
+            return Response(
+                {
+                    "status": False,
+                    "message": f"Something went wrong: {str(e)}",
+                    "data": [],
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 class DashboardAPIView(APIView):
-    """
-    Admin Dashboard API
-    """
 
     def get(self, request):
         try:

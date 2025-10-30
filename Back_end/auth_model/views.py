@@ -26,37 +26,88 @@ from .serializers import *
 if not firebase_admin._apps:
     cred = credentials.Certificate("firebase/firebase_credentials.json")
     firebase_admin.initialize_app(cred)
-
 class LoginView(APIView):
     permission_classes = [AllowAny]
+
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.validated_data['user']
 
-            # Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
+            # ✅ Generate 6-digit OTP
+            otp = str(random.randint(100000, 999999))
+            expiry = timezone.now() + timedelta(minutes=5)
 
-            # Fetch Admin details
+            # ✅ Save OTP in DB
+            login_otp = LoginOTP.objects.create(
+                user=user,
+                otp=otp,
+                expires_at=expiry
+            )
+
+            # ✅ Send OTP via Twilio WhatsApp
             try:
-                details = user.details
-                admin_data = {
-                    "user_id":details.id,
-                    "full_name": details.full_name,
-                    "role": details.role,
-                    "phone": details.phone,
-                    "email": user.email
-                }
-            except AdminDetails.DoesNotExist:
-                admin_data = {}
+                account_sid = settings.TWILIO_ACCOUNT_SID
+                auth_token =  settings.TWILIO_AUTH_TOKEN
+                from_whatsapp = "whatsapp:+14155238886"  # Twilio Sandbox number
+                client = Client(account_sid, auth_token)
+
+                if user.details.phone:
+                    to_whatsapp = f"whatsapp:+91{user.details.phone}"
+                    message = client.messages.create(
+                        body=f"Your admin login OTP is {otp}. It expires in 5 minutes.",
+                        from_=from_whatsapp,
+                        to=to_whatsapp
+                    )
+            except Exception as e:
+                print("Twilio send error:", e)
 
             return Response({
-                "refresh": str(refresh),
-                "access": str(refresh.access_token),
-                "admin": admin_data
+                "message": "OTP sent to your registered WhatsApp number.",
+                "session_id": str(login_otp.session_id)
             }, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class VerifyLoginOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        session_id = request.data.get("session_id")
+        otp = request.data.get("otp")
+
+        try:
+            otp_obj = LoginOTP.objects.get(session_id=session_id, otp=otp)
+        except LoginOTP.DoesNotExist:
+            return Response({"message": "Invalid OTP"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if otp_obj.is_expired():
+            return Response({"message": "OTP expired"}, status=status.HTTP_400_BAD_REQUEST)
+
+        otp_obj.is_verified = True
+        otp_obj.save()
+
+        # ✅ Issue tokens after successful OTP
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(otp_obj.user)
+
+        try:
+            details = otp_obj.user.details
+            admin_data = {
+                "user_id": details.id,
+                "full_name": details.full_name,
+                "role": details.role,
+                "phone": details.phone,
+                "email": otp_obj.user.email,
+            }
+        except AdminDetails.DoesNotExist:
+            admin_data = {}
+
+        return Response({
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "admin": admin_data,
+        }, status=status.HTTP_200_OK)
 
 class SetNewPasswordView(APIView):
     permission_classes = [AllowAny]
@@ -93,63 +144,100 @@ class AdminDetailsView(APIView):
                 "message": "Email is required",
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create Auth user
-        user = Auth.objects.create_user(email=email, password="temp1234")
+        # Check if email already exists
+        if Auth.objects.filter(email=email).exists():
+            return Response({
+                "status": False,
+                "message": "An admin with this email already exists in Admin app or Customer App",
+            }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create AdminDetails
-        admin = AdminDetails.objects.create(
-            auth=user,
-            full_name=full_name,
-            phone=phone,
-            role=role
-        )
+        try:
+            # Create Auth user
+            user = Auth.objects.create_user(email=email, password="temp1234")
 
-        serializer = AdminDetailsSerializer(admin)
+            # Create AdminDetails
+            admin = AdminDetails.objects.create(
+                auth=user,
+                full_name=full_name,
+                phone=phone,
+                role=role
+            )
 
-        # Send password reset email
-        token = default_token_generator.make_token(user)
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+            CustomerDetails.objects.get_or_create(
+                auth=user,
+                defaults={"full_name": full_name},
+            )
 
-        send_mail(
-            subject="Set Your Password",
-            message=f"Hi {full_name},\n\nPlease set your password using the link below:\n{reset_link}",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False
-        )
+            serializer = AdminDetailsSerializer(admin)
 
-        return Response({
-            "status": True,
-            "message": "Admin added successfully. Password setup email sent.",
-            "data": serializer.data
-        }, status=status.HTTP_201_CREATED)
+            # Send password reset email
+            token = default_token_generator.make_token(user)
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+
+            send_mail(
+                subject="Set Your Password",
+                message=f"Hi {full_name},\n\nPlease set your password using the link below:\n{reset_link}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=False
+            )
+
+            return Response({
+                "status": True,
+                "message": "Admin added successfully. Password setup email sent.",
+                "data": serializer.data
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({
+                "status": False,
+                "message": f"Failed to create admin: {str(e)}",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     # List or Retrieve Admin
     def get(self, request, pk=None):
-        if pk:
-            admin = get_object_or_404(AdminDetails, pk=pk)
-            serializer = AdminDetailsSerializer(admin)
-        else:
-            admins = AdminDetails.objects.all()
-            serializer = AdminDetailsSerializer(admins, many=True)
+        try:
+            if pk:
+                admin = get_object_or_404(AdminDetails, pk=pk)
+                serializer = AdminDetailsSerializer(admin)
+            else:
+                admins = AdminDetails.objects.all()
+                serializer = AdminDetailsSerializer(admins, many=True)
 
-        return Response({
-            "status": True,
-            "data": serializer.data
-        }, status=status.HTTP_200_OK)
+            return Response({
+                "status": True,
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({
+                "status": False,
+                "message": f"Failed to retrieve admin(s): {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     # Update Admin
     def put(self, request, pk=None):
         admin = get_object_or_404(AdminDetails, pk=pk)
         serializer = AdminDetailsSerializer(admin, data=request.data, partial=True)
+
         if serializer.is_valid():
+            # Check email uniqueness if email is being updated
+            new_email = request.data.get("email")
+            if new_email and new_email != admin.auth.email:
+                if Auth.objects.filter(email=new_email).exists():
+                    return Response({
+                        "status": False,
+                        "message": "An admin with this email already exists in Customer App or Admin App"
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
             serializer.save()
             return Response({
                 "status": True,
                 "message": "Admin updated successfully",
                 "data": serializer.data
             }, status=status.HTTP_200_OK)
+
         return Response({
             "status": False,
             "message": "Failed to update admin",
@@ -158,12 +246,34 @@ class AdminDetailsView(APIView):
 
     # Delete Admin
     def delete(self, request, pk):
+  
         admin = get_object_or_404(AdminDetails, pk=pk)
-        admin.auth.delete()  # Deletes both Auth and AdminDetails via OneToOne
-        return Response({
-            "status": True,
-            "message": "Admin deleted successfully."
-        }, status=status.HTTP_200_OK)
+
+        try:
+            auth_user = admin.auth
+
+            from auth_model.models import CustomerDetails 
+
+            CustomerDetails.objects.filter(auth=auth_user).delete()
+
+            auth_user.delete()
+
+            return Response(
+                {
+                    "status": True,
+                    "message": "Admin and related records deleted successfully."
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception as e:
+            return Response(
+                {
+                    "status": False,
+                    "message": f"Failed to delete admin: {str(e)}"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
@@ -223,7 +333,7 @@ class ForgotPasswordCustomer(APIView):
         # Generate reset link
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = default_token_generator.make_token(user)
-        reset_link = f"{settings.FRONTEND_URL_CUSTOMER}/reset-password/{uid}/{token}/"
+        reset_link = f"{settings.FRONTEND_URL_CUSTOMER}/auth/reset-password/{uid}/{token}/"
 
         # Send email
         send_mail(

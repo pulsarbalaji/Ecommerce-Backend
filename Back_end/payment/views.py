@@ -61,17 +61,43 @@ class CreateOrderAPIView(APIView):
 
         return Response({"status": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
-
-# Verify Online Payment
-
-class VerifyPaymentAPIView(APIView):
+# 1️⃣ Create a Razorpay order (no DB order yet)
+class CreateRazorpayOrderAPIView(APIView):
     def post(self, request):
-        order_id = request.data.get("order_id")   # backend DB order
+        amount = request.data.get("amount")
+        if not amount:
+            return Response({"error": "Amount is required"}, status=400)
+
+        try:
+            amount_in_paise = int(Decimal(amount) * 100)
+            razorpay_order = client.order.create({
+                "amount": amount_in_paise,
+                "currency": "INR",
+                "payment_capture": 1
+            })
+
+            return Response({
+                "status": True,
+                "razorpay_order": razorpay_order
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"status": False, "message": str(e)}, status=400)
+
+
+# 2️⃣ Verify Razorpay payment and then create actual order
+class VerifyPaymentAndCreateOrderAPIView(APIView):
+    def post(self, request):
         razorpay_order_id = request.data.get("razorpay_order_id")
         razorpay_payment_id = request.data.get("razorpay_payment_id")
         razorpay_signature = request.data.get("razorpay_signature")
+        order_data = request.data.get("order_data")
+        customer_id = request.data.get("customer_id")
 
-        # Verify signature
+        if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, order_data, customer_id]):
+            return Response({"status": False, "message": "Missing required fields"}, status=400)
+
+        # ✅ Verify Razorpay signature
         try:
             client.utility.verify_payment_signature({
                 "razorpay_order_id": razorpay_order_id,
@@ -79,28 +105,28 @@ class VerifyPaymentAPIView(APIView):
                 "razorpay_signature": razorpay_signature
             })
         except SignatureVerificationError:
-            return Response({
-                "status": False,
-                "message": "Payment verification failed"
-            }, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"status": False, "message": "Payment verification failed"}, status=400)
 
-        # Update payment
-        payment = get_object_or_404(Payment, order_id=razorpay_order_id)
-        payment.payment_id = razorpay_payment_id
-        payment.status = "success"
-        payment.save()
+        # ✅ Create Order only after successful payment
+        serializer = OrderDetailsSerializer(data=order_data)
+        serializer.is_valid(raise_exception=True)
+        order = serializer.save(payment_status="success", status=OrderDetails.OrderStatus.ORDER_CONFIRMED)
 
-        # Update order
-        order = get_object_or_404(OrderDetails, id=order_id)
-        order.payment_status = "success"
-        order.status = OrderDetails.OrderStatus.PROCESSING
-        order.save()
+        # ✅ Save Payment record
+        Payment.objects.create(
+            customer_id=customer_id,
+            order_id=razorpay_order_id,
+            payment_id=razorpay_payment_id,
+            amount=float(order.total_amount),
+            method="online",
+            status="success"
+        )
 
         return Response({
             "status": True,
-            "message": "Payment verified successfully",
-            "order_id": order.id
-        })
+            "message": "Payment verified & order created successfully",
+            "order": serializer.data
+        }, status=status.HTTP_201_CREATED)
 
 class OrderTrackingAPIView(APIView):
     """

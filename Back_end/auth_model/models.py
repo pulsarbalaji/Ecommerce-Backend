@@ -11,7 +11,6 @@ class AuthManager(BaseUserManager):
         if not email and not phone:
             raise ValueError("User must provide either an email or phone")
 
-        # Prevent duplicates
         extra_fields.pop("email", None)
         extra_fields.pop("phone", None)
 
@@ -21,28 +20,33 @@ class AuthManager(BaseUserManager):
             **extra_fields
         )
 
-        # ✅ hash password properly
         if password:
-            user.set_password(password)   # uses make_password internally
+            user.set_password(password)
         else:
             user.set_unusable_password()
 
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, password=None, **extra_fields):
+    def create_superuser(self, email, phone=None, password=None, **extra_fields):
+        # ✅ ensure required fields
+        if not email:
+            raise ValueError("Superuser must have an email address")
+        if not phone:
+            raise ValueError("Superuser must have a phone number")
+
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
-
 
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True")
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True")
 
-        user = self.create_user(email=email, password=password, **extra_fields)
+        user = self.create_user(email=email, phone=phone, password=password, **extra_fields)
         return user
+
 
 class Auth(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True, null=True, blank=True)
@@ -95,15 +99,49 @@ class AdminDetails(models.Model):
 
 
 @receiver(post_save, sender=Auth)
-def create_admin_details(sender, instance, created, **kwargs):
+def create_admin_and_customer_details(sender, instance, created, **kwargs):
+
     if created and instance.is_superuser:
-        AdminDetails.objects.create(
+        AdminDetails.objects.get_or_create(
             auth=instance,
-            full_name=instance.email.split("@")[0].capitalize() if instance.email else "Admin",
-            phone=instance.phone,
-            role="superadmin"
+            defaults={
+                "full_name": instance.email.split("@")[0].capitalize() if instance.email else "Admin",
+                "phone": instance.phone,
+                "role": "superadmin"
+            }
         )
 
+    if instance.is_superuser or instance.is_staff:
+
+        full_name = (
+            getattr(instance.details, "full_name", None)
+            if hasattr(instance, "details")
+            else (instance.email.split("@")[0].capitalize() if instance.email else "User")
+        )
+
+        CustomerDetails.objects.get_or_create(
+            auth=instance,
+            defaults={
+                "full_name": full_name,
+                "address": "",
+                "gender": "",
+            },
+        )
+
+class LoginOTP(models.Model):
+    user = models.ForeignKey(Auth, on_delete=models.CASCADE, related_name="login_otps")
+    otp = models.CharField(max_length=6)
+    session_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_verified = models.BooleanField(default=False)
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    def __str__(self):
+        return f"{self.user.email or self.user.phone} - {self.otp}"
+    
 
 class CustomerDetails(models.Model):
     auth = models.OneToOneField(Auth, on_delete=models.CASCADE, related_name="customer_details")

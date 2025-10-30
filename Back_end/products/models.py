@@ -2,6 +2,8 @@ from django.db import models
 from auth_model.models import AdminDetails,CustomerDetails
 from django.utils.translation import gettext_lazy as _
 import uuid
+from django.utils import timezone
+from datetime import date
 
 class Category(models.Model):
     category_name = models.CharField(max_length=100, unique=True)
@@ -22,7 +24,7 @@ class Category(models.Model):
 
 class Product(models.Model):
     product_name = models.CharField(max_length=300, blank=False, null=False)
-    product_description = models.TextField(max_length=3000, blank=False, null=False)
+    product_description = models.TextField(max_length=3000, blank=True, null=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name="products")
@@ -49,7 +51,7 @@ class OrderDetails(models.Model):
 
     class OrderStatus(models.TextChoices):
         PENDING = "pending", _("Pending")
-        PROCESSING = "processing", _("Processing")
+        ORDER_CONFIRMED  = "order_confirmed", _("Order Confirmed")
         SHIPPED = "shipped", _("Shipped")
         DELIVERED = "delivered", _("Delivered")
         CANCELLED = "cancelled", _("Cancelled")
@@ -158,12 +160,20 @@ class Contactus(models.Model):
         ordering = ["-created_at"]
 
 class OfferDetails(models.Model):
+    category = models.ForeignKey("Category", on_delete=models.CASCADE, related_name='offers')
+    product = models.ForeignKey("Product", on_delete=models.CASCADE, related_name='offers')
 
-    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='offers')
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='offers')
-    offer_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True,help_text="Offer percentage (e.g., 10.00 for 10%)")
-    offer_name = models.CharField(max_length=300, blank=False, null=False)
+    offer_name = models.CharField(max_length=300)
+    offer_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Offer percentage (e.g., 10.00 for 10%)"
+    )
+
+    start_date = models.DateField(default=date.today)
+    end_date = models.DateField(default=date.today)
+
     is_active = models.BooleanField(default=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -172,4 +182,11 @@ class OfferDetails(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.product.name} - {self.offer_percentage}%"
+        return f"{self.offer_name} - {self.offer_percentage}%"
+
+    # ✅ Automatically deactivate expired offers
+    def check_and_update_status(self):
+        today = timezone.now().date()
+        if self.end_date < today and self.is_active:
+            self.is_active = False
+            self.save(update_fields=['is_active'])
