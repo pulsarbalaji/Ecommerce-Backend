@@ -32,6 +32,11 @@ class StandardResultsSetPagination(PageNumberPagination):
     page_size_query_param = "page_size"
     max_page_size = 100
 
+class ProductSetPagination(PageNumberPagination):
+    page_size = 24
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
 
 class CategoryDetailsView(APIView):
 
@@ -289,7 +294,7 @@ class InvoicePDFView(APIView):
     
 class ProductListAPIView(APIView):
     permission_classes = [AllowAny]
-    pagination_class = StandardResultsSetPagination
+    pagination_class = ProductSetPagination
 
     def get(self, request, id=None):
         offer_only = request.query_params.get("offer_only", "false").lower() == "true"
@@ -424,10 +429,12 @@ class ContactusView(APIView):
             )
 
         contactus = Contactus.objects.all().order_by("-created_at")
-        serializer = ContactusSerializer(contactus, many=True)
-        return Response(
-            {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
-        )
+        
+        paginator = CustomPageNumberPagination()
+        paginated_qs = paginator.paginate_queryset(contactus, request)
+        serializer = ContactusSerializer(paginated_qs, many=True)
+
+        return paginator.get_paginated_response(serializer.data)
 
 class OrderStatusUpdateView(APIView):
 
@@ -721,3 +728,96 @@ class DashboardAPIView(APIView):
                 "message": f"Something went wrong: {str(e)}",
                 "data": {}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+class StockAvailability(APIView):
+    def get(self, request):
+        product_id = request.GET.get("product_id")
+
+        if not product_id:
+            return Response({
+                "status": False,
+                "message": "product_id is required"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            product = Product.objects.get(id=product_id)
+            return Response({
+                "status": True,
+                "product_id": product_id,
+                "stock": product.stock_quantity  # change to your stock field name
+            }, status=status.HTTP_200_OK)
+
+        except Product.DoesNotExist:
+            return Response({
+                "status": False,
+                "message": "Product not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+
+class FavoriteToggleView(APIView):
+
+    def post(self, request):
+        product_id = request.data.get("product_id")
+        auth_id = request.data.get("auth_id")
+        if not product_id:
+            return Response({"error": "product_id required"}, status=400)
+
+        # Get logged in customer
+        customer = CustomerDetails.objects.get(auth_id=auth_id)
+
+        # Check if favorite exists
+        favorite = FavoriteProduct.objects.filter(product_id=product_id, customer=customer).first()
+
+        if favorite:
+            favorite.delete()
+            return Response({"message": "Removed from favorites", "is_favorite": False})
+
+        # Create favorite
+        FavoriteProduct.objects.create(product_id=product_id, customer=customer)
+        return Response({"message": "Added to favorites", "is_favorite": True})
+
+class FavoriteListView(APIView):
+    pagination_class = ProductSetPagination
+
+    def get(self, request):
+        auth_id = request.GET.get("auth_id")
+        customer = CustomerDetails.objects.get(auth_id=auth_id)
+
+        # Get favorite product IDs
+        favorites = FavoriteProduct.objects.filter(customer=customer).order_by("-created_at")
+        product_ids = favorites.values_list("product_id", flat=True)
+
+        # Fetch actual product objects
+        products = Product.objects.filter(id__in=product_ids).order_by("-created_at")
+
+        paginator = self.pagination_class()
+        paginated_products = paginator.paginate_queryset(products, request)
+
+        serializer = ProductWithOfferSerializer(paginated_products, many=True)
+
+        return Response({
+            "success": True,
+            "message": "Favorite products fetched successfully",
+            "total_items": paginator.page.paginator.count,
+            "total_pages": paginator.page.paginator.num_pages,
+            "current_page": paginator.page.number,
+            "next": paginator.get_next_link(),
+            "previous": paginator.get_previous_link(),
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+
+class FavoriteListIdsView(APIView):
+    def get(self, request):
+        auth_id = request.query_params.get("auth_id")
+
+        if not auth_id:
+            return Response({"error": "auth_id required"}, status=400)
+
+        try:
+            customer = CustomerDetails.objects.get(auth_id=auth_id)
+        except CustomerDetails.DoesNotExist:
+            return Response({"favorites": []})  
+
+        fav_ids = FavoriteProduct.objects.filter(customer=customer).values_list("product_id", flat=True)
+
+        return Response({"favorites": list(fav_ids)})

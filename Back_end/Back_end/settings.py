@@ -214,7 +214,7 @@ MEDIA_ROOT= os.path.join((BASE_DIR), 'media/')
 MEDIA_URL= 'media/'
 
 # FRONTEND_URL = 'https://projectmanagement.soucient.com'
-FRONTEND_URL = 'http://localhost:3000'
+FRONTEND_URL = 'http://localhost:5173'
 
 FRONTEND_URL_CUSTOMER= 'http://localhost:3000'
 

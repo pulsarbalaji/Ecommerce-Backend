@@ -111,24 +111,29 @@ class VerifyLoginOTPView(APIView):
 
 class SetNewPasswordView(APIView):
     permission_classes = [AllowAny]
+
     def post(self, request):
         uid = request.data.get("uid")
         token = request.data.get("token")
-        password = request.data.get("password")
+        password = request.data.get("new_password")
+
+        if not (uid and token and password):
+            return Response({"status": False, "message": "Missing fields"}, status=400)
 
         try:
             uid = urlsafe_base64_decode(uid).decode()
             user = Auth.objects.get(pk=uid)
-        except (TypeError, ValueError, OverflowError, Auth.DoesNotExist):
-            return Response({"status": False, "message": "Invalid UID"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({"status": False, "message": "Invalid UID"}, status=400)
 
         if not default_token_generator.check_token(user, token):
-            return Response({"status": False, "message": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"status": False, "message": "Invalid or expired token"}, status=400)
 
-        user.set_password(password)
+        # ✅ store hashed password
+        user.password = make_password(password)
         user.save()
 
-        return Response({"status": True, "message": "Password set successfully"}, status=status.HTTP_200_OK)
+        return Response({"status": True, "message": "Password set successfully"}, status=200)
 
 class AdminDetailsView(APIView):
     # Create Admin
@@ -153,7 +158,7 @@ class AdminDetailsView(APIView):
 
         try:
             # Create Auth user
-            user = Auth.objects.create_user(email=email, password="temp1234")
+            user = Auth.objects.create_user(email=email, password="temp-1234",is_active =True,is_staff =True)
 
             # Create AdminDetails
             admin = AdminDetails.objects.create(
@@ -173,7 +178,7 @@ class AdminDetailsView(APIView):
             # Send password reset email
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
-            reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+            reset_link = f"{settings.FRONTEND_URL}/auth/reset-password/{uid}/{token}/"
 
             send_mail(
                 subject="Set Your Password",

@@ -10,6 +10,7 @@ urlpatterns = [
 
     path("productlist/", ProductListAPIView.as_view(), name="Product-List"),
     path("productlist/<int:id>/", ProductListAPIView.as_view(), name="Product-List"),
+    path("stock/", StockAvailability.as_view(), name="stock"),
 
     path("categorylist/", CategoryListAPIView.as_view(), name="Category-List"),
     path("categorylist/<int:id>/", CategoryListAPIView.as_view(), name="Category-List"),
@@ -32,4 +33,8 @@ urlpatterns = [
     path('offers/category/<int:category_id>/', ProductsByCategory.as_view(), name='offers-by-category'),
 
     path('Dashboard/', DashboardAPIView.as_view(), name='offer-detail'),
+
+    path("favorites/toggle/", FavoriteToggleView.as_view(), name="favorite-toggle"),
+    path("favorites/", FavoriteListView.as_view(), name="favorite-list"),
+    path("favorites/ids/", FavoriteListIdsView.as_view(), name="favorite-list"),
 ]

@@ -1,8 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import generics, status
-from .serializers import OrderDetailsSerializer,OrderTrackingSerializer
-from .models import  Payment
+from .serializers import OrderDetailsSerializer,OrderTrackingSerializer,GSTSettingSerializer,CourierChargeSettingSerializer
+from .models import  Payment,GSTSetting,CourierChargeSetting
 from products.models import OrderDetails
 from auth_model.models import CustomerDetails
 from django.shortcuts import get_object_or_404
@@ -15,7 +15,7 @@ from rest_framework.pagination import PageNumberPagination
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
 class OrderHistoryPagination(PageNumberPagination):
-    page_size = 16
+    page_size = 15
     page_size_query_param = "page_size"
     max_page_size = 50
 
@@ -179,3 +179,37 @@ class CustomerOrderHistoryView(generics.ListAPIView):
         page = self.paginate_queryset(queryset)
         serializer = self.get_serializer(page, many=True)
         return self.get_paginated_response(serializer.data)
+    
+
+class GSTSettingView(APIView):
+    def get(self, request):
+        setting = GSTSetting.objects.get(id=1)
+        serializer = GSTSettingSerializer(setting)
+        return Response(serializer.data)
+
+    def put(self, request):
+        setting = GSTSetting.objects.get(id=1)
+        serializer = GSTSettingSerializer(setting, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CourierChargeSettingView(APIView):
+    def get(self, request):
+        setting = CourierChargeSetting.objects.get(id=1)
+        serializer = CourierChargeSettingSerializer(setting)
+        return Response(serializer.data)
+
+    def put(self, request):
+        setting = CourierChargeSetting.objects.get(id=1)
+        serializer = CourierChargeSettingSerializer(setting, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+
+    

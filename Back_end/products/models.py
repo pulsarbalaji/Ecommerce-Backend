@@ -11,6 +11,7 @@ class Category(models.Model):
     category_image = models.ImageField(upload_to="category/", blank=True, null=True)
 
     created_by = models.ForeignKey(AdminDetails,on_delete=models.CASCADE, related_name='category',null=True,blank=True)
+    updated_by = models.ForeignKey(AdminDetails,on_delete=models.CASCADE, related_name='update_category',null=True,blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -26,6 +27,8 @@ class Product(models.Model):
     product_name = models.CharField(max_length=300, blank=False, null=False)
     product_description = models.TextField(max_length=3000, blank=True, null=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2,blank=True, null=True)  # e.g. 100, 1, 500
+    quantity_unit = models.CharField(max_length=20,blank=True, null=True)  # e.g. ml, L, g, kg, pcs
 
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name="products")
 
@@ -37,6 +40,7 @@ class Product(models.Model):
     average_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0.0)
 
     created_by = models.ForeignKey(AdminDetails,on_delete=models.CASCADE, related_name='product',null=True,blank=True)
+    updated_by = models.ForeignKey(AdminDetails,on_delete=models.CASCADE, related_name='update_product',null=True,blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -69,6 +73,12 @@ class OrderDetails(models.Model):
         REFUNDED = "refunded", _("Refunded")
 
     customer = models.ForeignKey(CustomerDetails, on_delete=models.CASCADE,related_name="orders",)
+
+    first_name = models.CharField(max_length=150, blank=True, null=True)
+    last_name = models.CharField(max_length=150, blank=True, null=True)
+
+    contact_number = models.CharField(max_length=10, blank=True, null=True)
+    secondary_number = models.CharField(max_length=10, blank=True, null=True)
 
     order_number = models.CharField(max_length=20, unique=True, editable=False)
 
@@ -174,6 +184,9 @@ class OfferDetails(models.Model):
 
     is_active = models.BooleanField(default=True)
 
+    created_by = models.ForeignKey(AdminDetails,on_delete=models.CASCADE, related_name='offer',null=True,blank=True)
+    updated_by = models.ForeignKey(AdminDetails,on_delete=models.CASCADE, related_name='update_offer',null=True,blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -190,3 +203,16 @@ class OfferDetails(models.Model):
         if self.end_date < today and self.is_active:
             self.is_active = False
             self.save(update_fields=['is_active'])
+
+class FavoriteProduct(models.Model):
+    product = models.ForeignKey(Product,on_delete=models.CASCADE,related_name="favorite_products")
+    customer = models.ForeignKey(CustomerDetails,on_delete=models.CASCADE,related_name="favorite_products")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'favorite_details'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.customer} - {self.product}"

@@ -208,6 +208,8 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
             "offer_percentage",
             "offer_price",
             "product_image",
+            "quantity",
+            "quantity_unit",
             "stock_quantity",
             "is_available",
             "average_rating",
@@ -329,3 +331,10 @@ class FillterProductSerializer(serializers.ModelSerializer):
         if rep.get("category_name"):
             rep["category_name"] = format_name(rep["category_name"]).title()
         return rep
+
+class FavoriteProductSerializer(serializers.ModelSerializer):
+    product = ProductWithOfferSerializer(read_only=True)
+
+    class Meta:
+        model = FavoriteProduct
+        fields = ['id', 'product', 'created_at']

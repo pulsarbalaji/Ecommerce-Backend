@@ -1,19 +1,34 @@
 from rest_framework import serializers
 from decimal import Decimal
-from .models import Payment
+from .models import Payment,GSTSetting,CourierChargeSetting
 from products.models import OrderDetails, OrderItem
 from auth_model.models import CustomerDetails
 from django.db import transaction
 
-# -------------------------------
-# Order Item Serializer
-# -------------------------------
+def normalize_product_name(name: str):
+    return name.strip().capitalize().replace(" ", "_")
+
+def format_name(name: str):
+    return name.replace("_", " ")
+
 class OrderItemSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source="product.product_name", read_only=True)
+    product_name = serializers.SerializerMethodField()
+    product_image = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ["product", "product_name", "quantity", "price", "tax", "total"]
+        fields = ["product","product_image", "product_name", "quantity", "price", "tax", "total"]
+
+    # ✅ Format product name for API response
+    def get_product_name(self, obj):
+        if obj.product and obj.product.product_name:
+            return format_name(obj.product.product_name)
+        return None
+
+    def get_product_image(self, obj):
+        if obj.product.product_image and hasattr(obj.product.product_image, "url"):
+            return obj.product.product_image.url  
+        return None
 
     def create(self, validated_data):
         validated_data["total"] = Decimal(validated_data["price"]) * validated_data["quantity"]
@@ -22,6 +37,8 @@ class OrderItemSerializer(serializers.ModelSerializer):
 # -------------------------------
 # Order Details Serializer
 # -------------------------------
+
+
 class OrderDetailsSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     customer = serializers.PrimaryKeyRelatedField(queryset=CustomerDetails.objects.all())
@@ -32,6 +49,10 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "customer",
+            "first_name",
+            "last_name",
+            "contact_number",
+            "secondary_number",
             "order_number",
             "billing_address",
             "shipping_address",
@@ -46,7 +67,7 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
             "items",
         ]
         read_only_fields = ["subtotal", "tax", "total_amount", "status", "payment_status"]
-
+    
     @transaction.atomic  # ✅ all operations below happen in one DB transaction
     def create(self, validated_data):
         items_data = validated_data.pop("items")
@@ -110,6 +131,7 @@ class OrderTrackingSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrderDetails
         fields = [
+            "id",
             "order_number",
             "status",
             "payment_status",
@@ -132,3 +154,15 @@ class OrderTrackingSerializer(serializers.ModelSerializer):
             customer=obj.customer, order_id=obj.order_number
         ).first()
         return PaymentSerializer(payment).data if payment else None
+
+
+class GSTSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GSTSetting
+        fields = '__all__'
+
+
+class CourierChargeSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CourierChargeSetting
+        fields = '__all__'
