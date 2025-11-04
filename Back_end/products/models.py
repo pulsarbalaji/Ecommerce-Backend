@@ -36,6 +36,9 @@ class Product(models.Model):
 
     stock_quantity = models.PositiveIntegerField(default=0)
     is_available = models.BooleanField(default=True)
+    reserved_by = models.ForeignKey("auth_model.CustomerDetails",on_delete=models.SET_NULL,null=True,blank=True,related_name="reserved_products")
+    reserved_until = models.DateTimeField(null=True, blank=True)
+
 
     average_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0.0)
 
@@ -48,6 +51,16 @@ class Product(models.Model):
         db_table = "products_details"
         ordering = ["-created_at"]
 
+    def is_reserved(self):
+        """Check if reservation is still active"""
+        return self.reserved_until and self.reserved_until > timezone.now()
+
+    def clear_reservation(self):
+        """Release reservation when expired"""
+        self.reserved_by = None
+        self.reserved_until = None
+        self.save()
+        
     def __str__(self):
         return self.product_name
 
