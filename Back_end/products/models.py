@@ -4,6 +4,7 @@ from django.utils.translation import gettext_lazy as _
 import uuid
 from django.utils import timezone
 from datetime import date
+from django.db.models import Avg
 
 class Category(models.Model):
     category_name = models.CharField(max_length=100, unique=True)
@@ -31,6 +32,7 @@ class Product(models.Model):
     quantity_unit = models.CharField(max_length=20,blank=True, null=True)  # e.g. ml, L, g, kg, pcs
 
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name="products")
+    parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="variants")
 
     product_image = models.ImageField(upload_to="products/", blank=True, null=True)
 
@@ -63,6 +65,16 @@ class Product(models.Model):
         
     def __str__(self):
         return self.product_name
+    
+    def is_variant(self):
+        return self.parent is not None
+    def save(self, *args, **kwargs):
+
+        if self.stock_quantity <= 0:
+            self.is_available = False
+        else:
+            self.is_available = True
+        super().save(*args, **kwargs)
 
 class OrderDetails(models.Model):
 
@@ -229,3 +241,35 @@ class FavoriteProduct(models.Model):
 
     def __str__(self):
         return f"{self.customer} - {self.product}"
+
+
+class ProductFeedback(models.Model):
+    product = models.ForeignKey("Product", on_delete=models.CASCADE, related_name="feedbacks")
+    user = models.ForeignKey("auth_model.CustomerDetails", on_delete=models.CASCADE, related_name="product_feedbacks")
+    rating = models.PositiveSmallIntegerField(default=5)  # 1–5
+    comment = models.TextField(blank=True, null=True, max_length=1000)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "product_feedback"
+        unique_together = ("product", "user")  # one feedback per user/product
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.product.product_name} - {self.rating}⭐ by {self.user}"
+
+    # ✅ Update average rating on save or delete
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self.update_product_rating()
+
+    def delete(self, *args, **kwargs):
+        super().delete(*args, **kwargs)
+        self.update_product_rating()
+
+    def update_product_rating(self):
+        avg_rating = self.product.feedbacks.aggregate(avg=Avg("rating"))["avg"] or 0.0
+        self.product.average_rating = round(avg_rating, 2)
+        self.product.save(update_fields=["average_rating"])

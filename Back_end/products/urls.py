@@ -37,4 +37,14 @@ urlpatterns = [
     path("favorites/toggle/", FavoriteToggleView.as_view(), name="favorite-toggle"),
     path("favorites/", FavoriteListView.as_view(), name="favorite-list"),
     path("favorites/ids/", FavoriteListIdsView.as_view(), name="favorite-list"),
+
+    path("productvariant/", ProductVariant.as_view(), name="Product-Variant"),
+    path("productvariant/<int:pk>/", ProductVariant.as_view(), name="Product-Variant"),
+    path("productvariantfillter/", ProductVariantFillter.as_view(), name="Product-Variant"),
+    path("mainproductlist/", MainProductDropdown.as_view(), name="MainProduct-Dropdown"),
+
+    path("feedback/<int:product_id>/", ProductFeedbackAPIView.as_view(), name="product-feedback"),
+    path("product-feedback-list/<int:product_id>/", ProductFeedbackListAPIView.as_view(), name="product-feedback-list"),
+
+
 ]

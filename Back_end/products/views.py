@@ -21,6 +21,8 @@ from .models import *
 from .serializers import *
 from django.utils import timezone
 from django.db.models.functions import TruncDate,Coalesce,Cast
+from django.db.models import Prefetch, Q
+
 
 
 def normalize_category_name(name: str):
@@ -126,7 +128,7 @@ class ProductDetailsView(APIView):
                     status=status.HTTP_200_OK,
                 )
 
-            products = Product.objects.all().order_by("-created_at")
+            products = Product.objects.filter(parent__isnull=True).order_by("-created_at")
 
             # ✅ Apply pagination
             paginator = self.pagination_class()
@@ -299,7 +301,7 @@ class ProductListAPIView(APIView):
     def get(self, request, id=None):
         offer_only = request.query_params.get("offer_only", "false").lower() == "true"
 
-        # Single product by ID
+        # --- 1️⃣ Single Product by ID ---
         if id:
             try:
                 product = Product.objects.get(pk=id)
@@ -317,20 +319,31 @@ class ProductListAPIView(APIView):
                 "data": serializer.data
             }, status=status.HTTP_200_OK)
 
-        # Multiple products
-        if offer_only:
-            products = Product.objects.filter(offers__is_active=True).distinct()
-        else:
-            products = Product.objects.all().order_by("-created_at")
+        # --- 2️⃣ Multiple Products ---
+        # Base queryset (main products only)
+        qs = Product.objects.filter(parent__isnull=True).select_related("category").prefetch_related(
+            "offers",
+            Prefetch("variants", queryset=Product.objects.filter(is_available=True, stock_quantity__gt=0))
+        )
 
+        # Apply offer_only filter if requested
+        if offer_only:
+            qs = qs.filter(
+                Q(offers__is_active=True) |
+                Q(variants__offers__is_active=True)
+            ).distinct()
+
+        # --- 3️⃣ Pagination ---
         paginator = self.pagination_class()
-        paginated_qs = paginator.paginate_queryset(products, request)
+        paginated_qs = paginator.paginate_queryset(qs.order_by("-created_at"), request)
+
+        # --- 4️⃣ Serialize ---
         serializer = ProductWithOfferSerializer(paginated_qs, many=True)
 
-        # Custom paginated response like your ProductFilter
+        # --- 5️⃣ Response ---
         return Response({
             "success": True,
-            "message": "Data fetched successfully",
+            "message": "Products fetched successfully",
             "total_items": paginator.page.paginator.count,
             "total_pages": paginator.page.paginator.num_pages,
             "current_page": paginator.page.number,
@@ -379,17 +392,19 @@ class ProductFilter(APIView):
 
     def get(self, request, category_id=None):
         try:
-            # Always filter products, if category_id given apply filter
-            products = Product.objects.all().order_by("-id")
+            # ✅ Only fetch main products (those without a parent)
+            products = Product.objects.filter(parent__isnull=True).order_by("-id")
 
+            # ✅ Filter by category if provided
             if category_id:
                 products = products.filter(category_id=category_id)
 
-            # Pagination
+            # ✅ Apply pagination
             paginator = CustomPageNumberPagination()
             paginated_qs = paginator.paginate_queryset(products, request)
             serializer = ProductWithOfferSerializer(paginated_qs, many=True)
 
+            # ✅ Return paginated response
             return paginator.get_paginated_response(serializer.data)
 
         except Exception as e:
@@ -634,7 +649,7 @@ class DashboardAPIView(APIView):
                 "total_orders": OrderDetails.objects.count(),
                 "total_customers": CustomerDetails.objects.count(),
                 "total_products": Product.objects.count(),
-                "pending_orders": OrderDetails.objects.filter(status__iexact="pending").count(),
+                "confirmed_orders": OrderDetails.objects.filter(status__iexact="order_confirmed").count(),
                 "cancelled_orders": OrderDetails.objects.filter(status__iexact="cancelled").count(),
             }
 
@@ -821,3 +836,222 @@ class FavoriteListIdsView(APIView):
         fav_ids = FavoriteProduct.objects.filter(customer=customer).values_list("product_id", flat=True)
 
         return Response({"favorites": list(fav_ids)})
+
+
+class ProductVariant(APIView):
+
+    def post(self, request):
+        parent_id = request.data.get("parent")
+        serializer = ProductVariantSerializer(data=request.data)
+        if serializer.is_valid():
+            if parent_id:
+                parent = get_object_or_404(Product, id=parent_id)
+                serializer.validated_data["category"] = parent.category  
+            product = serializer.save()
+            return Response({
+                "status": True,
+                "message": "Variant created successfully" if parent_id else "Product created successfully",
+                "data": ProductVariantSerializer(product).data
+            }, status=status.HTTP_201_CREATED)
+        return Response({"status": False, "errors": serializer.errors}, status=400)
+    
+    def get(self, request, pk=None):
+            # ✅ If single variant (by ID)
+            if pk:
+                product = get_object_or_404(Product, pk=pk)
+                serializer = ProductVariantSerializer(product)
+                return Response(
+                    {"status": True, "data": serializer.data},
+                    status=status.HTTP_200_OK,
+                )
+
+            # ✅ If list of all variants (paginated)
+            products = Product.objects.filter(parent__isnull=False).order_by("-created_at")
+
+            paginator = PageNumberPagination()
+            paginator.page_size = int(request.GET.get("page_size", 10))  # default 10 items per page
+            paginated_products = paginator.paginate_queryset(products, request)
+
+            serializer = ProductVariantSerializer(paginated_products, many=True)
+            return paginator.get_paginated_response({
+                "status": True,
+                "data": serializer.data
+            })
+    
+    def put(self, request, pk):
+        product = get_object_or_404(Product, pk=pk)
+        serializer = ProductVariantSerializer(product, data=request.data, partial=True)
+
+        if serializer.is_valid():
+            parent = serializer.validated_data.get("parent") or product.parent
+            if parent:
+                serializer.validated_data["category"] = parent.category
+
+            updated_product = serializer.save()
+            return Response({
+                "status": True,
+                "message": "Product updated successfully",
+                "data": ProductVariantSerializer(updated_product).data
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            "status": False,
+            "errors": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    
+    def delete(self, request, pk):
+        product = self.get_object(pk)
+        product.delete()
+        return Response({
+            "status": True,
+            "message": "Product deleted successfully"
+        }, status=200)
+    
+class ProductVariantFillter(APIView):
+    def get(self, request):
+        parent_id = request.query_params.get("parent_id")
+
+        if not parent_id:
+            return Response({
+                "status": False,
+                "message": "parent_id query parameter is required."
+            }, status=400)
+
+        # ✅ Get product (can be parent or variant)
+        product = get_object_or_404(Product, id=parent_id)
+
+        # ✅ If product is a VARIANT, get its parent
+        if product.parent:
+            parent = product.parent
+        else:
+            parent = product
+
+        # ✅ Get all variants under that parent
+        variants = parent.variants.all().order_by("-created_at")
+
+        # ✅ Serialize both parent and variants
+        parent_serializer = ProductVariantSerializer(parent)
+        variant_serializer = ProductVariantSerializer(variants, many=True)
+
+        # ✅ Combine results (parent first, then variants)
+        all_items = [parent_serializer.data] + variant_serializer.data
+
+        return Response({
+            "status": True,
+            "parent_id": parent.id,
+            "parent_name": parent.product_name,
+            "total_variants": variants.count(),
+            "data": all_items
+        }, status=200)
+
+class MainProductDropdown(APIView):
+    def get(self, request):
+
+        main_products = Product.objects.filter(parent__isnull=True).order_by("-created_at")
+        serializer = MainProductDropdownSerializer(main_products, many=True)
+        return Response(
+            {"status": True, "data": serializer.data},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ProductFeedbackAPIView(APIView):
+
+
+    def get_customer(self, user):
+        """Return CustomerDetails linked to the logged-in Auth user."""
+        try:
+            return user.customer_details
+        except CustomerDetails.DoesNotExist:
+            return None
+
+    def get(self, request, product_id):
+        """✅ Fetch feedback for this user and product"""
+        customer = self.get_customer(request.user)
+        if not customer:
+            return Response({
+                "status": False,
+                "message": "Customer profile not found."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        feedback = ProductFeedback.objects.filter(product_id=product_id, user=customer).first()
+        if not feedback:
+            return Response({
+                "status": False,
+                "message": "No feedback found for this user.",
+                "data": None
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ProductFeedbackSerializer(feedback)
+        return Response({
+            "status": True,
+            "message": "Feedback fetched successfully.",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, product_id):
+        """✅ Create or update feedback for the logged-in customer"""
+        product = get_object_or_404(Product, id=product_id)
+        customer = self.get_customer(request.user)
+
+        if not customer:
+            return Response({
+                "status": False,
+                "message": "Customer profile not found."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if feedback already exists
+        feedback = ProductFeedback.objects.filter(product=product, user=customer).first()
+
+        if feedback:
+            # Update existing feedback
+            serializer = ProductFeedbackSerializer(feedback, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({
+                    "status": True,
+                    "message": "Feedback updated successfully.",
+                    "data": serializer.data
+                }, status=status.HTTP_200_OK)
+            return Response({
+                "status": False,
+                "errors": serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create new feedback
+        serializer = ProductFeedbackSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(product=product, user=customer)
+            return Response({
+                "status": True,
+                "message": "Feedback added successfully.",
+                "data": serializer.data
+            }, status=status.HTTP_201_CREATED)
+
+        return Response({
+            "status": False,
+            "errors": serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+
+class FeedbackPagination(PageNumberPagination):
+    page_size = 5  # 5 reviews per page
+    page_size_query_param = 'page_size'
+    max_page_size = 20
+
+
+class ProductFeedbackListAPIView(APIView):
+    """📄 Paginated reviews for a product"""
+    pagination_class = FeedbackPagination
+
+    def get(self, request, product_id):
+        feedbacks = ProductFeedback.objects.filter(product_id=product_id).order_by('-created_at')
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(feedbacks, request)
+        serializer = ProductFeedbackSerializer(page, many=True)
+        return paginator.get_paginated_response({
+            "status": True,
+            "message": "Reviews fetched successfully",
+            "data": serializer.data
+        })

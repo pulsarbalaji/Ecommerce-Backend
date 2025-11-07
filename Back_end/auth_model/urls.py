@@ -2,11 +2,16 @@ from django.urls import path
 from .views import (LoginView,SetNewPasswordView,AdminDetailsView,ForgotPasswordView,CustomerListView,ForgotPasswordCustomer,
 GoogleRegisterView,GoogleLoginView,EmailRegisterStep1,EmailRegisterStep2,CustomerEmailAPIView,CustomerDetailsAPIView,
 PhoneRegisterStep1,PhoneRegisterStep2,PhoneLoginStep1,PhoneLoginStep2,LogoutView,VerifyLoginOTPView)
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
 
 urlpatterns = [
     path("adminlogin/", LoginView.as_view(), name="login"),
     path("verifyloginotp/", VerifyLoginOTPView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
+
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
     path("adminsdetails/", AdminDetailsView.as_view(), name="admin-list-create"),
     path("adminsdetails/<int:pk>/", AdminDetailsView.as_view(), name="admin-detail"),
