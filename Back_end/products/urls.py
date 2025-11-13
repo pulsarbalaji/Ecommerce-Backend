@@ -46,5 +46,11 @@ urlpatterns = [
     path("feedback/<int:product_id>/", ProductFeedbackAPIView.as_view(), name="product-feedback"),
     path("product-feedback-list/<int:product_id>/", ProductFeedbackListAPIView.as_view(), name="product-feedback-list"),
 
+    path("orders/search/", GlobalOrderSearchView.as_view(), name="global-order-search"),
+    path("products/search/", GlobalProductSearchView.as_view(), name="global-product-search"),
+
+    path("customer-notifications/<int:customer_id>/", CustomerNotifications.as_view(), name="Customer-Notifications"),
+    path("readnotifications/<int:id>/", MarkNotificationRead.as_view(), name="Mark-Notification-Read"),
+
 
 ]

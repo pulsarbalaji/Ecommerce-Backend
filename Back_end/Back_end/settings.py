@@ -42,7 +42,7 @@ INSTALLED_APPS = [
     'storages',
 
     'auth_model',
-    'products',
+    'products.apps.ProductsConfig',
     'payment',
 ]
 
@@ -88,7 +88,9 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',  # Apply globally
     ),
 }
-
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, "static"),  # ✅ include your static folder
+]
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=23),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),

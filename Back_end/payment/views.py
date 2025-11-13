@@ -413,7 +413,7 @@ class VerifyPaymentAndCreateOrderAPIView(APIView):
         razorpay_payment_id = request.data.get("razorpay_payment_id")
         razorpay_signature = request.data.get("razorpay_signature")
         order_data = request.data.get("order_data")
-        customer_id = request.data.get("customer_id")
+        customer_id = request.data.get("customer_id") or (order_data or {}).get("customer")
 
         if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, order_data, customer_id]):
             return Response({"status": False, "message": "Missing required fields"}, status=400)

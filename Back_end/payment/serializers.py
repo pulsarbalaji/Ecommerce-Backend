@@ -139,6 +139,7 @@ class OrderTrackingSerializer(serializers.ModelSerializer):
             "shipping_address",
             "billing_address",
             "preferred_courier_service",
+            "courier_number",
             "subtotal",
             "tax",
             "shipping_cost",

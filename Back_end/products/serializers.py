@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import *
 from .utils import get_display_product
+from decimal import Decimal, ROUND_HALF_UP
 
 def normalize_category_name(name: str):
     """Convert spaces to underscores and lowercase for DB storage"""
@@ -96,6 +97,7 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
             "order_number",
             "status",
             "preferred_courier_service",
+            "courier_number",
             "payment_method",
             "payment_status",
             "shipping_address",
@@ -172,6 +174,22 @@ class OfferDetailsSerializer(serializers.ModelSerializer):
         ]
 
     # ✅ Validate start & end dates
+    def validate_product_name(self, value):
+        return normalize_product_name(value)
+
+    # ✅ Format product name on API response
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        product_name = rep.get("product_name")
+        if product_name:
+            rep["product_name"] = format_name(product_name)
+        category_name = rep.get("category_name")
+        if category_name:
+            rep["category_name"] = format_name(category_name).title()  # Optional: title case
+        
+            return rep
+
+
     def validate(self, attrs):
         start_date = attrs.get('start_date')
         end_date = attrs.get('end_date')
@@ -189,7 +207,6 @@ class OfferDetailsSerializer(serializers.ModelSerializer):
     # ✅ Normalize offer name
     def validate_offer_name(self, value):
         return value.strip().title()
-
 
 
 
@@ -224,21 +241,33 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
 
     # --- Offer calculation ---
     def get_offer_price(self, obj):
+        """
+        Returns discounted price if an active offer exists.
+        Safely uses Decimal arithmetic.
+        """
         offer = obj.offers.filter(is_active=True).first()
         if offer and offer.offer_percentage:
-            discount = obj.price * (offer.offer_percentage / 100)
-            return round(obj.price - discount, 2)
+            try:
+                price = obj.price or Decimal("0.00")
+                offer_percentage = Decimal(offer.offer_percentage) / Decimal("100")
+
+                discounted_price = price * (Decimal("1.00") - offer_percentage)
+
+                # Round to 2 decimal places
+                return discounted_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            except Exception as e:
+                return price
         return None
 
     def get_offer_percentage(self, obj):
         offer = obj.offers.filter(is_active=True).first()
         return offer.offer_percentage if offer and offer.offer_percentage else None
-    
 
     # --- Normalize on save ---
     def validate_product_name(self, value):
         return normalize_product_name(value)
 
+    # --- Variant Logic ---
     def get_active_variant(self, obj):
         """Return variant details if main is out of stock."""
         if obj.parent:  # variant itself, skip
@@ -257,8 +286,8 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
                     "stock_quantity": variant.stock_quantity,
                 }
         return None
-    
-    # --- Format on response ---
+
+    # --- Adjust Response ---
     def to_representation(self, instance):
         """Return adjusted representation for display logic."""
         rep = super().to_representation(instance)
@@ -273,12 +302,13 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
             rep["quantity"] = display_product.quantity
             rep["quantity_unit"] = display_product.quantity_unit
             rep["stock_quantity"] = display_product.stock_quantity
-            rep["product_image"] = display_product.product_image.url if display_product.product_image else None
+            rep["product_image"] = (
+                display_product.product_image.url if display_product.product_image else None
+            )
             rep["is_available"] = display_product.is_available
             rep["active_variant"] = None  # hide nested field to avoid redundancy
 
         else:
-            # format names for normal main product
             if rep.get("product_name"):
                 rep["product_name"] = format_name(rep["product_name"])
             if rep.get("category_name"):
@@ -428,20 +458,32 @@ class ProductVariantSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         parent = validated_data["parent"]
-        validated_data["category"] = parent.category  # ✅ auto-copy category
+        validated_data["category"] = parent.category  # auto-copy category
+
+        # ✅ If image not provided, inherit from parent
+        if not validated_data.get("product_image"):
+            if parent.product_image:
+                validated_data["product_image"] = parent.product_image
+
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
+        # ✅ Update category if parent changed
         if instance.parent:
-            validated_data["category"] = instance.parent.category  # ✅ auto-update category if parent changes
+            validated_data["category"] = instance.parent.category
+
+        # ✅ If product_image not provided on update, keep existing
+        if not validated_data.get("product_image"):
+            if instance.parent and instance.parent.product_image and not instance.product_image:
+                validated_data["product_image"] = instance.parent.product_image
+
         return super().update(instance, validated_data)
-    
 
 class MainProductDropdownSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
-        fields =["id","product_name"]
+        fields =["id","product_name","quantity_unit"]
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
@@ -476,3 +518,19 @@ class ProductFeedbackSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Rating must be between 1 and 5.")
         return value
     
+
+class NotificationSerializer(serializers.ModelSerializer):
+    order_number = serializers.CharField(source="order.order_number", read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = [
+            "id",
+            "title",
+            "message",
+            "type",
+            "order_number",
+            "is_read",
+            "created_at",
+            "read_at"
+        ]

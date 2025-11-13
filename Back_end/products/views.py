@@ -1,5 +1,6 @@
 import json
 from django.http import HttpResponse
+from num2words import num2words
 from django.utils.timezone import now, timedelta
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -22,8 +23,19 @@ from .serializers import *
 from django.utils import timezone
 from django.db.models.functions import TruncDate,Coalesce,Cast
 from django.db.models import Prefetch, Q
-
-
+from payment.models import GSTSetting
+from .utils import amount_in_words_indian,link_callback
+import os
+from xhtml2pdf import default
+from django.conf import settings
+from PyPDF2 import PdfReader, PdfWriter
+from reportlab.pdfgen import canvas
+from io import BytesIO
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.pdfmetrics import registerFontFamily
+from xhtml2pdf.default import DEFAULT_FONT
 
 def normalize_category_name(name: str):
 
@@ -129,15 +141,11 @@ class ProductDetailsView(APIView):
                 )
 
             products = Product.objects.filter(parent__isnull=True).order_by("-created_at")
+            serializer = ProductSerializer(products, many=True)
 
-            # ✅ Apply pagination
-            paginator = self.pagination_class()
-            paginated_products = paginator.paginate_queryset(products, request)
-
-            serializer = ProductSerializer(paginated_products, many=True)
-
-            return paginator.get_paginated_response(
-                {"status": True, "data": serializer.data}
+            return Response(
+                {"status": True, "data": serializer.data},
+                status=status.HTTP_200_OK,
             )
 
         except Exception as e:
@@ -145,6 +153,7 @@ class ProductDetailsView(APIView):
                 {"status": False, "message": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
     def put(self, request, pk=None):
         if not pk:
             return Response({"status": False, "message": "Product ID is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -246,57 +255,128 @@ class OrderDetailsView(generics.GenericAPIView):
         return Response({"status": True, "message": "Order deleted"}, status=200)
     
 class InvoicePDFView(APIView):
-    """
-    Generate PDF invoice for an order using xhtml2pdf
-    """
     def get(self, request, order_id):
-        # Get the order
+        # Get order and invoice
         order = get_object_or_404(OrderDetails, id=order_id)
+        invoice, _ = Invoice.objects.get_or_create(order=order)
 
-        # Serialize the order (nested items included)
-        serializer = OrderDetailsSerializer(order)
-        order_data = serializer.data
+        # GST + totals
+        gst_setting = GSTSetting.objects.first()
+        gst_percentage = gst_setting.gst_percentage if gst_setting else Decimal("18.00")
 
-        # Compute totals (if not already stored)
-        subtotal = float(order_data.get("subtotal", 0))
-        total_tax = sum(float(item["tax"]) for item in order_data["items"])
-        shipping = float(order_data.get("shipping_cost", 0))
-        total_amount = float(order_data.get("total_amount", subtotal + total_tax + shipping))
+        subtotal = sum(float(item.price) * item.quantity for item in order.items.all())
+        gst_amount = subtotal * float(gst_percentage) / 100
+        shipping = float(order.shipping_cost or 0)
+        total_amount = subtotal + gst_amount + shipping
 
-        # Company info
+        amount_in_words = amount_in_words_indian(total_amount)
+
+        # Paths
+        logo_path = os.path.join(settings.BASE_DIR, "static", "image", "Logo.jpeg")
+        font_path = os.path.join(settings.BASE_DIR, "static", "fonts", "DejaVuSans.ttf")
+
+        # ✅ Register and embed DejaVuSans font
+        pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
+        registerFontFamily(
+            "DejaVuSans",
+            normal="DejaVuSans",
+            bold="DejaVuSans",
+            italic="DejaVuSans",
+            boldItalic="DejaVuSans",
+        )
+
+        # ✅ Replace default Helvetica with DejaVuSans (fixes ₹ everywhere)
+        default.DEFAULT_FONT["helvetica"] = "DejaVuSans"
+        default.DEFAULT_FONT["Times-Roman"] = "DejaVuSans"
+        default.DEFAULT_FONT["Courier"] = "DejaVuSans"
+        default.DEFAULT_FONT["Helvetica"] = "DejaVuSans"
+        default.DEFAULT_FONT["Helvetica-Bold"] = "DejaVuSans"
+        default.DEFAULT_FONT["Helvetica-Oblique"] = "DejaVuSans"
+        default.DEFAULT_FONT["Helvetica-BoldOblique"] = "DejaVuSans"
+
+        # Company Info
         company = {
-            "name": "My Ecommerce Store",
-            "address": "123, Anna Nagar, Chennai, Tamil Nadu",
-            "email": "support@myecommercestore.com",
-            "phone": "+91-9876543210",
-            "logo_url": request.build_absolute_uri("/static/image/logoonline.jpg"),
+            "name": "Vallalar Naturals from Village Kannama",
+            "address": "No. 2, South Street, Abatharanapuram, Serakuppam Post, Vadalur - 607303.",
+            "email": "vallalarnaturalsvillagekannama@gmail.com",
+            "phone": "+91 7639157615",
+            "gstin": "33FEHPS4088N1ZP",
+            "logo_path": logo_path,
+            "font_path": font_path,
         }
 
-        # Render HTML with template
+        # Render HTML
         html = render_to_string("invoice.html", {
-            "order": order_data,   # serialized data
+            "invoice_number": invoice.invoice_number,
+            "invoice_date": invoice.generated_at.strftime("%d-%b-%Y"),
+            "order": order,
+            "customer": {
+                "name": f"{order.first_name or ''} {order.last_name or ''}".strip(),
+                "address": order.shipping_address,
+                "contact": order.contact_number,
+            },
             "company": company,
-            "invoice_number": order_data["order_number"],
-            "subtotal": subtotal,
-            "total_tax": total_tax,
-            "shipping": shipping,
-            "total_amount": total_amount,
+            "subtotal": f"{subtotal:.2f}",
+            "gst_percentage": gst_percentage,
+            "gst_amount": f"{gst_amount:.2f}",
+            "shipping": f"{shipping:.2f}",
+            "total_amount": f"{total_amount:.2f}",
+            "amount_in_words": amount_in_words,
+            "payment_method": order.payment_method,
         })
 
-        # Create PDF response
-        response = HttpResponse(content_type="application/pdf")
-        response["Content-Disposition"] = f'attachment; filename="invoice_{order_data["order_number"]}.pdf"'
+        # Step 1: Generate base PDF in memory
+        pdf_buffer = BytesIO()
+        pisa_status = pisa.CreatePDF(
+            html, dest=pdf_buffer, link_callback=link_callback, encoding="UTF-8"
+        )
 
-        # Convert HTML to PDF
-        pisa_status = pisa.CreatePDF(html, dest=response)
         if pisa_status.err:
             return HttpResponse("Error generating PDF", status=500)
 
+        pdf_buffer.seek(0)
+        reader = PdfReader(pdf_buffer)
+        writer = PdfWriter()
+
+        # Step 2: Apply watermark background (transparent)
+        for page in reader.pages:
+            packet = BytesIO()
+            can = canvas.Canvas(packet, pagesize=(595.27, 841.89))  # A4 size
+            width, height = 595.27, 841.89
+
+            can.saveState()
+            logo = ImageReader(logo_path)
+            can.setFillAlpha(0.08)  # Transparency (0.0 - 1.0)
+
+            # Adjust background size/position
+            img_width = width * 0.9
+            img_height = img_width * 1.0
+            x = (width - img_width) / 2
+            y = (height - img_height) / 2
+
+            can.drawImage(logo, x, y, width=img_width, height=img_height, mask="auto")
+            can.restoreState()
+            can.save()
+
+            packet.seek(0)
+            watermark_pdf = PdfReader(packet)
+            watermark_page = watermark_pdf.pages[0]
+            page.merge_page(watermark_page)
+            writer.add_page(page)
+
+        # Step 3: Return final merged PDF
+        final_output = BytesIO()
+        writer.write(final_output)
+        final_output.seek(0)
+
+        response = HttpResponse(final_output, content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'attachment; filename="invoice_{invoice.invoice_number}.pdf"'
+        )
         return response
     
 class ProductListAPIView(APIView):
     permission_classes = [AllowAny]
-    pagination_class = ProductSetPagination
 
     def get(self, request, id=None):
         offer_only = request.query_params.get("offer_only", "false").lower() == "true"
@@ -319,8 +399,7 @@ class ProductListAPIView(APIView):
                 "data": serializer.data
             }, status=status.HTTP_200_OK)
 
-        # --- 2️⃣ Multiple Products ---
-        # Base queryset (main products only)
+        # --- 2️⃣ Multiple Products (no pagination) ---
         qs = Product.objects.filter(parent__isnull=True).select_related("category").prefetch_related(
             "offers",
             Prefetch("variants", queryset=Product.objects.filter(is_available=True, stock_quantity__gt=0))
@@ -333,22 +412,14 @@ class ProductListAPIView(APIView):
                 Q(variants__offers__is_active=True)
             ).distinct()
 
-        # --- 3️⃣ Pagination ---
-        paginator = self.pagination_class()
-        paginated_qs = paginator.paginate_queryset(qs.order_by("-created_at"), request)
+        # --- 3️⃣ Serialize all products (no pagination) ---
+        serializer = ProductWithOfferSerializer(qs.order_by("-created_at"), many=True)
 
-        # --- 4️⃣ Serialize ---
-        serializer = ProductWithOfferSerializer(paginated_qs, many=True)
-
-        # --- 5️⃣ Response ---
+        # --- 4️⃣ Response ---
         return Response({
             "success": True,
             "message": "Products fetched successfully",
-            "total_items": paginator.page.paginator.count,
-            "total_pages": paginator.page.paginator.num_pages,
-            "current_page": paginator.page.number,
-            "next": paginator.get_next_link(),
-            "previous": paginator.get_previous_link(),
+            "total_items": qs.count(),
             "data": serializer.data
         }, status=status.HTTP_200_OK)
         
@@ -451,6 +522,11 @@ class ContactusView(APIView):
 
         return paginator.get_paginated_response(serializer.data)
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from .models import OrderDetails
+
 class OrderStatusUpdateView(APIView):
 
     def put(self, request, id):
@@ -463,7 +539,9 @@ class OrderStatusUpdateView(APIView):
             )
 
         order_status = request.data.get("order_status")
+        courier_number = request.data.get("courier_number")
 
+        # --- Validation ---
         if not order_status:
             return Response(
                 {"message": "Missing field: order_status"},
@@ -477,18 +555,35 @@ class OrderStatusUpdateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # --- Require courier number if status = shipped ---
+        if order_status == OrderDetails.OrderStatus.SHIPPED and not courier_number:
+            return Response(
+                {"message": "courier_number is required when status is 'shipped'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # --- Update order ---
         order.status = order_status
+
+        if courier_number:
+            order.courier_number = courier_number
+
         order.save()
 
-        return Response(
-            {
-                "message": "Order status updated successfully.",
-                "order_id": order.id,
-                "order_number": order.order_number,
-                "order_status": order.status,
-            },
-            status=status.HTTP_200_OK,
-        )
+        response_data = {
+            "message": "Order status updated successfully.",
+            "order_id": order.id,
+            "order_number": order.order_number,
+            "order_status": order.status,
+        }
+
+        # Include courier details if shipped
+        if order.status == OrderDetails.OrderStatus.SHIPPED:
+            response_data["courier_number"] = order.courier_number
+            response_data["preferred_courier_service"] = order.preferred_courier_service
+
+        return Response(response_data, status=status.HTTP_200_OK)
+
 
 class OfferPagination(PageNumberPagination):
     page_size = 10
@@ -1055,3 +1150,91 @@ class ProductFeedbackListAPIView(APIView):
             "message": "Reviews fetched successfully",
             "data": serializer.data
         })
+    
+class GlobalOrderSearchView(generics.ListAPIView):
+    serializer_class = OrderDetailsSerializer
+
+    def get_queryset(self):
+        queryset = OrderDetails.objects.all().select_related("customer").prefetch_related("items")
+
+        # ✅ Search by Order ID only
+        order_id = self.request.query_params.get("order_id")
+        if order_id:
+            return queryset.filter(order_number__icontains=order_id)
+
+        # ✅ Global search
+        search = self.request.query_params.get("search")
+        if search:
+            queryset = queryset.filter(
+                Q(order_number__icontains=search)
+                | Q(preferred_courier_service__icontains=search)
+                | Q(courier_number__icontains=search)
+                | Q(payment_status__icontains=search)
+                | Q(status__icontains=search)
+                | Q(total_amount__icontains=search)
+            )
+
+        return queryset.order_by("-created_at")
+
+    def list(self, request, *args, **kwargs):
+        try:
+            queryset = self.get_queryset()
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({"status": True, "data": serializer.data}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"status": False, "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+class GlobalProductSearchView(generics.ListAPIView):
+
+    permission_classes = [AllowAny]
+
+    serializer_class = ProductWithOfferSerializer
+
+    def get_queryset(self):
+        queryset = Product.objects.all().select_related("category")
+
+        # ✅ Global search
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(product_name__icontains=search)
+                | Q(product_description__icontains=search)
+                | Q(category__category_name__icontains=search)
+            )
+
+        return queryset.order_by("-created_at")
+
+    def list(self, request, *args, **kwargs):
+        try:
+            queryset = self.get_queryset()
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({"status": True, "data": serializer.data}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"status": False, "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+class CustomerNotifications(APIView):
+    def get(self, request, customer_id):
+        # Only show unread notifications
+        notifications = Notification.objects.filter(
+            customer_id=customer_id,
+            is_read=False
+        )
+
+        serializer = NotificationSerializer(notifications, many=True)
+
+        return Response({
+            "success": True,
+            "total": notifications.count(),
+            "data": serializer.data
+        })
+
+
+class MarkNotificationRead(APIView):
+    def put(self, request, id):
+        try:
+            notification = Notification.objects.get(id=id)
+            notification.mark_as_read()
+            return Response({"success": True, "message": "Notification marked as read"})
+        except Notification.DoesNotExist:
+            return Response({"success": False, "message": "Notification not found"}, status=404)

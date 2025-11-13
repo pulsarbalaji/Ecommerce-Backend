@@ -109,6 +109,7 @@ class OrderDetails(models.Model):
 
     status = models.CharField(max_length=20, choices=OrderStatus.choices, default=OrderStatus.PENDING)
     preferred_courier_service = models.CharField(max_length=300, blank=True, null=True)
+    courier_number = models.CharField(max_length=100, blank=True, null=True) 
 
     payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices, default=PaymentMethod.COD)
     payment_status = models.CharField(max_length=20, choices=PaymentStatus.choices, default=PaymentStatus.PENDING)
@@ -128,9 +129,19 @@ class OrderDetails(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def save(self, *args, **kwargs):
+        if self.pk:
+            old_instance = OrderDetails.objects.get(pk=self.pk)
+            if old_instance.status != self.status and self.status == self.OrderStatus.DELIVERED:
+                self.delivered_at = timezone.now()
+        else:
+            if self.status == self.OrderStatus.DELIVERED:
+                self.delivered_at = timezone.now()
+
         if not self.order_number:
             self.order_number = f"ORD-{uuid.uuid4().hex[:10].upper()}"
+
         super().save(*args, **kwargs)
+
 
     def __str__(self):
         return f"Order {self.order_number} - {self.customer.full_name}"
@@ -199,11 +210,11 @@ class OfferDetails(models.Model):
     product = models.ForeignKey("Product", on_delete=models.CASCADE, related_name='offers')
 
     offer_name = models.CharField(max_length=300)
-    offer_percentage = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True,
-        help_text="Offer percentage (e.g., 10.00 for 10%)"
-    )
-
+    offer_percentage = models.PositiveIntegerField(
+    null=True,
+    blank=True,
+    help_text="Offer percentage (e.g., 10 for 10%)"
+)
     start_date = models.DateField(default=date.today)
     end_date = models.DateField(default=date.today)
 
@@ -273,3 +284,36 @@ class ProductFeedback(models.Model):
         avg_rating = self.product.feedbacks.aggregate(avg=Avg("rating"))["avg"] or 0.0
         self.product.average_rating = round(avg_rating, 2)
         self.product.save(update_fields=["average_rating"])
+
+class Notification(models.Model):
+
+    class NotificationType(models.TextChoices):
+        ORDER_STATUS = "order_status", _("Order Status")
+        PAYMENT = "payment", _("Payment")
+        SYSTEM = "system", _("System")
+
+    # ONLY customer notifications
+    customer = models.ForeignKey("auth_model.CustomerDetails",on_delete=models.CASCADE,related_name="notifications")
+
+    order = models.ForeignKey("OrderDetails",on_delete=models.CASCADE,null=True,blank=True,related_name="notifications")
+
+    type = models.CharField(max_length=50, choices=NotificationType.choices, default=NotificationType.ORDER_STATUS)
+
+    title = models.CharField(max_length=255)  
+    message = models.TextField()               
+
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "notification_details"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.title} ({self.type})"
+
+    def mark_as_read(self):
+        self.is_read = True
+        self.read_at = timezone.now()
+        self.save(update_fields=["is_read", "read_at"])

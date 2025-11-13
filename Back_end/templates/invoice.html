@@ -1,98 +1,159 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
+  <title>Invoice {{ invoice_number }}</title>
+
   <style>
-    body { font-family: Arial, sans-serif; font-size: 12px; margin: 30px; }
-    .header, .footer { width: 100%; }
-    .company-info { float: left; }
-    .company-logo { float: right; }
-    .clear { clear: both; }
-    h1 { text-align: center; margin-top: 20px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
-    th { background: #f2f2f2; }
-    .summary { margin-top: 20px; float: right; width: 40%; }
-    .summary table { border: none; }
-    .summary td { text-align: right; padding: 5px; }
-    .customer-info { margin-top: 20px; }
+    @font-face {
+      font-family: 'DejaVuSans';
+      src: url("file://{{ company.font_path }}");
+    }
+
+    body {
+  font-family: Arial, sans-serif;
+  margin: 20px;
+  font-size: 13px;
+  color: #333;
+  position: relative;
+}
+.inr {
+  font-family: 'DejaVuSans';
+}
+
+    .header {
+      text-align: center;
+      border-bottom: 2px solid #000;
+      padding-bottom: 10px;
+    }
+
+    .info-table td {
+      padding: 5px 10px;
+      vertical-align: top;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+    }
+
+    th,
+    td {
+      border: 1px solid #666;
+      padding: 6px;
+      text-align: center;
+    }
+
+    th {
+      background-color: #f3f3f3;
+    }
+
+    .right {
+      text-align: right;
+    }
+
+    .total-section {
+      margin-top: 20px;
+      width: 50%;
+      float: right;
+    }
+
+    .amount-words {
+      margin-top: 60px;
+      font-style: italic;
+    }
+
+    .footer {
+      text-align: center;
+      margin-top: 60px;
+      font-size: 12px;
+      border-top: 1px solid #aaa;
+      padding-top: 10px;
+    }
   </style>
 </head>
+
 <body>
-  <div class="header">
-    <div class="company-info">
-      <strong>{{ company.name }}</strong><br>
-      {{ company.address }}<br>
-      Email: {{ company.email }}<br>
-      Phone: {{ company.phone }}
+  <div class="content">
+    <div class="header">
+      <h2>Customer Sales Invoice</h2>
+      <h3>{{ company.name }}</h3>
+      <p>
+        {{ company.address }}<br>
+        Phone: {{ company.phone }} | Email: {{ company.email }}<br>
+        GSTIN: {{ company.gstin }}
+      </p>
     </div>
-    <div class="company-logo">
-      <img src="{{ company.logo_url }}" width="120" height="50">
+
+    <div class="invoice-details">
+      <table class="info-table">
+        <tr>
+          <td><strong>Invoice No:</strong> {{ invoice_number }}</td>
+          <td><strong>Invoice Date:</strong> {{ invoice_date }}</td>
+        </tr>
+        <tr>
+          <td><strong>Customer Name:</strong> {{ customer.name }}</td>
+          <td><strong>Contact:</strong> {{ customer.contact }}</td>
+        </tr>
+        <tr>
+          <td colspan="2"><strong>Address:</strong> {{ customer.address }}</td>
+        </tr>
+      </table>
     </div>
-    <div class="clear"></div>
-  </div>
 
-  <h1>Invoice</h1>
-
-  <div class="customer-info">
-    <b>Invoice Number:</b> {{ invoice_number }}<br>
-    <b>Order Number:</b> {{ order.order_number }}<br>
-    <b>Customer:</b> {{ order.customer.full_name }}<br>
-    <b>Email:</b> {{ order.customer.email }}<br>
-    <b>Shipping Address:</b> {{ order.shipping_address }}<br>
-    <b>Billing Address:</b> {{ order.billing_address }}<br>
-    <b>Date:</b> {{ order.ordered_at|date:"d-m-Y" }}<br>
-  </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th>Product</th>
-        <th>Qty</th>
-        <th>Price</th>
-        <th>Tax</th>
-        <th>Total</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in order.items %}
-<tr>
-  <td>{{ item.product_name }}</td>
-  <td>{{ item.quantity }}</td>
-  <td>{{ item.price }}</td>
-  <td>{{ item.tax }}</td>
-  <td>{{ item.total }}</td>
-</tr>
-{% endfor %}
-
-    </tbody>
-  </table>
-
-  <div class="summary">
+    <h4 style="margin-top: 25px;">Product Details</h4>
     <table>
-      <tr>
-        <td>Subtotal:</td>
-        <td>{{ order.subtotal }}</td>
-      </tr>
-      <tr>
-        <td>Tax:</td>
-        <td>{{ order.tax }}</td>
-      </tr>
-      <tr>
-        <td>Shipping:</td>
-        <td>{{ order.shipping_cost }}</td>
-      </tr>
-      <tr>
-        <td><b>Total:</b></td>
-        <td><b>{{ order.total_amount }}</b></td>
-      </tr>
+      <thead>
+        <tr>
+          <th>S.No</th>
+          <th>Product Name</th>
+          <th>Quantity</th>
+          <th>Unit Price (<span class="inr">&#8377;</span>)</th>
+          <th>Total (<span class="inr">&#8377;</span>)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in order.items.all %}
+        <tr>
+          <td>{{ forloop.counter }}</td>
+          <td>{{ item.product.product_name }}</td>
+          <td>{{ item.quantity }}</td>
+          <td>{{ item.price }}</td>
+          <td>{{ item.total }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No items found in this order.</td></tr>
+        {% endfor %}
+      </tbody>
     </table>
-  </div>
 
-  <div class="clear"></div>
+    <div class="total-section">
+      <table>
+        <tr><td><strong>Subtotal:</strong></td><td class="right">(<span class="inr">&#8377;</span>) {{ subtotal }}</td></tr>
+        <tr><td><strong>GST ({{ gst_percentage }}%):</strong></td><td class="right">(<span class="inr">&#8377;</span>) {{ gst_amount }}</td></tr>
+        <tr><td><strong>Shipping:</strong></td><td class="right">(<span class="inr">&#8377;</span>) {{ shipping }}</td></tr>
+        <tr><td><strong>Grand Total:</strong></td><td class="right"><strong>(<span class="inr">&#8377;</span>) {{ total_amount }}</strong></td></tr>
+      </table>
+    </div>
 
-  <div class="footer" style="margin-top: 50px; text-align: center;">
-    Thank you for shopping with {{ company.name }}!
+    <div class="amount-words">
+      <strong>Amount in Words:</strong> (<span class="inr">&#8377;</span>) {{ amount_in_words }}
+    </div>
+
+    <div style="margin-top: 60px;">
+      <strong>Payment Mode:</strong> {{ payment_method|default:"_____" }} <br><br>
+      <strong>Authorized Signature:</strong> ____________________________
+    </div>
+
+    <div class="footer">
+      <p>
+        Invoice generated electronically – signature not required.<br>
+        Thank you for your purchase!<br>
+        <strong>Shop Natural. Live Pure — {{ company.name }}</strong>
+      </p>
+    </div>
   </div>
 </body>
 </html>
