@@ -45,6 +45,11 @@ urlpatterns = [
 
     path("feedback/<int:product_id>/", ProductFeedbackAPIView.as_view(), name="product-feedback"),
     path("product-feedback-list/<int:product_id>/", ProductFeedbackListAPIView.as_view(), name="product-feedback-list"),
+    path("product-rating-summary/<int:product_id>/", ProductRatingSummaryAPIView.as_view(),name="Product-Rating-Summary"),
+    path("product-feedback-filter/<int:product_id>/", ProductFeedbackFilterAPIView.as_view(),name="ProductFeedback-filter"),
+    path("admin/feedback/<int:pk>/", AdminFeedbackCRUDAPIView.as_view(),name="Admin-Feedback-View"),
+    path("admin/feedback/filter/", FeedbackFilterAPIView.as_view(),name ="Admin-Feedback-Filter"),
+
 
     path("orders/search/", GlobalOrderSearchView.as_view(), name="global-order-search"),
     path("products/search/", GlobalProductSearchView.as_view(), name="global-product-search"),

@@ -23,18 +23,13 @@ class OrderHistoryPagination(PageNumberPagination):
     page_size = 15
     page_size_query_param = "page_size"
     max_page_size = 50
-
 class ReserveOrderAPIView(APIView):
-    """
-    Step 1: Reserve stock before payment (Razorpay or COD)
-    """
-
     def post(self, request):
         items = request.data.get("items", [])
         payment_method = request.data.get("payment_method", "online")
         auth_id = request.data.get("auth_id")
 
-        # -------------- Get customer --------------
+        # Get customer
         try:
             customer = CustomerDetails.objects.get(auth_id=auth_id)
         except CustomerDetails.DoesNotExist:
@@ -42,20 +37,23 @@ class ReserveOrderAPIView(APIView):
 
         try:
             with transaction.atomic():
-                total_amount = Decimal("0.00")
 
+                # ⭐ FULL TOTAL FROM FRONTEND (subtotal + gst + shipping)
+                full_total_amount = Decimal(request.data.get("total_amount", "0.00"))
+
+                # Reserve stock
                 for item in items:
                     product_id = item["product"]
                     quantity = int(item["quantity"])
                     product = Product.objects.select_for_update().get(id=product_id)
 
-                    # 🧹 clear expired reservations
+                    # Clear expired reservations
                     if product.reserved_until and product.reserved_until < timezone.now():
                         product.reserved_by = None
                         product.reserved_until = None
                         product.save()
 
-                    # 🚫 if someone else reserved this product
+                    # Check if reserved by someone else
                     if (
                         product.reserved_by
                         and product.reserved_by != customer
@@ -65,23 +63,25 @@ class ReserveOrderAPIView(APIView):
                             f"Sorry, {product.product_name} is being checked out by another user."
                         )
 
-                    # ❌ not enough stock
+                    # Stock check
                     if product.stock_quantity < quantity:
                         raise ValueError(
                             f"Insufficient stock for {product.product_name}. Only {product.stock_quantity} left."
                         )
 
-                    # ✅ reserve for current customer
+                    # Reserve for this customer
                     product.reserved_by = customer
                     product.reserved_until = timezone.now() + RESERVATION_DURATION
                     product.save()
 
-                    total_amount += Decimal(item["total"])
-
-                # -------------- create Razorpay order if online --------------
+                # --------------------------
+                # CREATE RAZORPAY ORDER
+                # --------------------------
                 razorpay_order = None
                 if payment_method == "online":
-                    amount_in_paise = int(total_amount * 100)
+
+                    amount_in_paise = int(full_total_amount * 100)
+
                     razorpay_order = client.order.create({
                         "amount": amount_in_paise,
                         "currency": "INR",
@@ -91,7 +91,7 @@ class ReserveOrderAPIView(APIView):
                     Payment.objects.create(
                         customer=customer,
                         order_id=razorpay_order["id"],
-                        amount=float(total_amount),
+                        amount=float(full_total_amount),   # ✔ FIXED
                         method="online",
                         status="created"
                     )

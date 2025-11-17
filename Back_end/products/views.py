@@ -35,6 +35,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
+from django.db.models import Count, Avg
 from xhtml2pdf.default import DEFAULT_FONT
 
 def normalize_category_name(name: str):
@@ -53,6 +54,7 @@ class ProductSetPagination(PageNumberPagination):
 
 
 class CategoryDetailsView(APIView):
+    permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = CategorySerializer(data=request.data)
@@ -403,6 +405,7 @@ class ProductListAPIView(APIView):
         qs = Product.objects.filter(parent__isnull=True).select_related("category").prefetch_related(
             "offers",
             Prefetch("variants", queryset=Product.objects.filter(is_available=True, stock_quantity__gt=0))
+            
         )
 
         # Apply offer_only filter if requested
@@ -840,6 +843,8 @@ class DashboardAPIView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
 class StockAvailability(APIView):
+    permission_classes = [AllowAny]
+
     def get(self, request):
         product_id = request.GET.get("product_id")
 
@@ -919,6 +924,8 @@ class FavoriteListView(APIView):
 class FavoriteListIdsView(APIView):
     def get(self, request):
         auth_id = request.query_params.get("auth_id")
+        product_id = request.query_params.get("product_id")
+        print("product_id",product_id)
 
         if not auth_id:
             return Response({"error": "auth_id required"}, status=400)
@@ -926,15 +933,26 @@ class FavoriteListIdsView(APIView):
         try:
             customer = CustomerDetails.objects.get(auth_id=auth_id)
         except CustomerDetails.DoesNotExist:
-            return Response({"favorites": []})  
+            return Response({"favorites": [], "is_favorite": False})
 
-        fav_ids = FavoriteProduct.objects.filter(customer=customer).values_list("product_id", flat=True)
+        # 🟢 CASE 1: Check if product is favorite
+        if product_id:
+            is_favorite = FavoriteProduct.objects.filter(
+                customer=customer, product_id=product_id
+            ).exists()
+
+            return Response({"is_favorite": is_favorite})
+
+        # 🟢 CASE 2: Return all favorites
+        fav_ids = FavoriteProduct.objects.filter(customer=customer).values_list(
+            "product_id", flat=True
+        )
 
         return Response({"favorites": list(fav_ids)})
 
 
 class ProductVariant(APIView):
-
+    permission_classes = [AllowAny]
     def post(self, request):
         parent_id = request.data.get("parent")
         serializer = ProductVariantSerializer(data=request.data)
@@ -1004,6 +1022,7 @@ class ProductVariant(APIView):
         }, status=200)
     
 class ProductVariantFillter(APIView):
+    permission_classes = [AllowAny]
     def get(self, request):
         parent_id = request.query_params.get("parent_id")
 
@@ -1129,11 +1148,10 @@ class ProductFeedbackAPIView(APIView):
             "errors": serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
     
-
 class FeedbackPagination(PageNumberPagination):
-    page_size = 5  # 5 reviews per page
-    page_size_query_param = 'page_size'
-    max_page_size = 20
+    page_size = 5              # ⭐ Change page size here (10 reviews per call)
+    page_size_query_param = "page_size"
+    max_page_size = 50
 
 
 class ProductFeedbackListAPIView(APIView):
@@ -1151,6 +1169,124 @@ class ProductFeedbackListAPIView(APIView):
             "data": serializer.data
         })
     
+class ProductRatingSummaryAPIView(APIView):
+    def get(self, request, product_id):
+        feedbacks = ProductFeedback.objects.filter(product_id=product_id)
+
+        # total ratings
+        total = feedbacks.count()
+
+        # average rating
+        avg = feedbacks.aggregate(avg=Avg("rating"))["avg"] or 0
+
+        # count per star
+        star_counts = feedbacks.values("rating").annotate(count=Count("id"))
+
+        # format: {5:14, 4:6, ...}
+        counts = {str(i): 0 for i in range(1, 6)}
+        for item in star_counts:
+            counts[str(item["rating"])] = item["count"]
+
+        # percentage
+        percentage = {
+            star: round((count / total) * 100, 2) if total > 0 else 0
+            for star, count in counts.items()
+        }
+
+        return Response({
+            "average": round(avg, 2),
+            "total": total,
+            "counts": counts,
+            "percentage": percentage
+        }, status=status.HTTP_200_OK)
+ 
+class ProductFeedbackFilterAPIView(generics.ListAPIView):
+    serializer_class = ProductFeedbackSerializer
+    pagination_class = FeedbackPagination
+
+    def get_queryset(self):
+        product_id = self.kwargs["product_id"]
+        rating = self.request.query_params.get("rating")  # ?rating=5
+
+        qs = ProductFeedback.objects.filter(product_id=product_id)
+
+        if rating:
+            qs = qs.filter(rating=rating)
+
+        # ⭐ First sort by rating (DESC), then by newest
+        return qs.order_by("-rating", "-created_at")
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        return Response({
+            "count": response.data["count"],
+            "next": response.data["next"],
+            "previous": response.data["previous"],
+            "page_size": self.pagination_class.page_size,
+            "results": response.data["results"]
+        })
+
+class AdminFeedbackCRUDAPIView(APIView):
+    # Optional: Only admins
+    # permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get_object(self, pk):
+        try:
+            return ProductFeedback.objects.get(pk=pk)
+        except ProductFeedback.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        feedback = self.get_object(pk)
+        if not feedback:
+            return Response({"message": "Feedback not found"}, status=404)
+
+        serializer = ProductFeedbackSerializer(feedback)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        feedback = self.get_object(pk)
+        if not feedback:
+            return Response({"message": "Feedback not found"}, status=404)
+
+        serializer = ProductFeedbackSerializer(feedback, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"message": "Feedback updated", "data": serializer.data})
+        return Response(serializer.errors, status=400)
+
+    def delete(self, request, pk):
+        feedback = self.get_object(pk)
+        if not feedback:
+            return Response({"message": "Feedback not found"}, status=404)
+
+        feedback.delete()
+        return Response({"message": "Feedback deleted"}, status=200)    
+
+class FeedbackFilterAPIView(APIView):
+
+    def get(self, request):
+        product_id = request.query_params.get("product_id")
+        rating = request.query_params.get("rating")
+
+        if not product_id:
+            return Response({"message": "product_id is required"}, status=400)
+
+        qs = ProductFeedback.objects.filter(product_id=product_id)
+
+        if rating:
+            qs = qs.filter(rating=rating)
+
+        qs = qs.order_by("-created_at")
+
+        serializer = ProductFeedbackSerializer(qs, many=True)
+
+        return Response({
+            "count": qs.count(),
+            "results": serializer.data
+        })
+
+
 class GlobalOrderSearchView(generics.ListAPIView):
     serializer_class = OrderDetailsSerializer
 

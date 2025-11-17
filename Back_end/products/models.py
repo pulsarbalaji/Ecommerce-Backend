@@ -291,9 +291,11 @@ class Notification(models.Model):
         ORDER_STATUS = "order_status", _("Order Status")
         PAYMENT = "payment", _("Payment")
         SYSTEM = "system", _("System")
+        PRODUCT_RATING = "product_rating", _("Product Rating")
 
     # ONLY customer notifications
     customer = models.ForeignKey("auth_model.CustomerDetails",on_delete=models.CASCADE,related_name="notifications")
+    product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True,related_name="notifications")
 
     order = models.ForeignKey("OrderDetails",on_delete=models.CASCADE,null=True,blank=True,related_name="notifications")
 

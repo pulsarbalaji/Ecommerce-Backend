@@ -44,6 +44,11 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
     customer = serializers.PrimaryKeyRelatedField(queryset=CustomerDetails.objects.all())
     order_number = serializers.CharField(read_only=True)
 
+    tax_percent = serializers.DecimalField(
+    max_digits=5, decimal_places=2, write_only=True, required=False
+)
+
+
     class Meta:
         model = OrderDetails
         fields = [
@@ -65,50 +70,53 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
             "total_amount",
             "status",
             "items",
+            "tax_percent",   # ← ADD THIS FIELD
         ]
         read_only_fields = ["subtotal", "tax", "total_amount", "status", "payment_status"]
-    
-    @transaction.atomic  # ✅ all operations below happen in one DB transaction
+
+    @transaction.atomic
     def create(self, validated_data):
         items_data = validated_data.pop("items")
-
-        # --- Calculate subtotal, tax, and total ---
-        subtotal = sum(Decimal(item["price"]) * item["quantity"] for item in items_data)
-        tax_total = sum(Decimal(item.get("tax", 0)) for item in items_data)
+        
+        gst_percent = Decimal(validated_data.pop("tax_percent", 0))
         shipping_cost = Decimal(validated_data.get("shipping_cost", 0))
+
+        # ---------- SUBTOTAL ----------
+        subtotal = sum(
+            Decimal(item["price"]) * item["quantity"]
+            for item in items_data
+        ).quantize(Decimal("0.00"))
+
+        # ---------- TAX ----------
+        tax_total = (subtotal * gst_percent / 100).quantize(Decimal("0.00"))
+
+        # ---------- TOTAL ---------- (₹ round to nearest integer)
+        total_amount = subtotal + tax_total + shipping_cost
+        total_amount = Decimal(round(total_amount))   # ← FINAL FIX
 
         validated_data["subtotal"] = subtotal
         validated_data["tax"] = tax_total
-        validated_data["total_amount"] = subtotal + tax_total + shipping_cost
+        validated_data["total_amount"] = total_amount
 
-        # --- Create order ---
+        # ---------- CREATE ORDER ----------
         order = OrderDetails.objects.create(**validated_data)
 
-        # --- Create order items & update stock ---
+        # ---------- CREATE ORDER ITEMS ----------
         for item in items_data:
-            product = item["product"]
+            price = Decimal(item["price"])
+            quantity = item["quantity"]
 
-            # ✅ Check stock availability
-            if product.stock_quantity < item["quantity"]:
-                raise serializers.ValidationError(
-                    f"Insufficient stock for product: {product.product_name}"
-                )
+            line_tax = (price * quantity * gst_percent / 100).quantize(Decimal("0.00"))
 
-            # ✅ Create order item
             OrderItem.objects.create(
                 order=order,
-                product=product,
-                quantity=item["quantity"],
-                price=Decimal(item["price"]),
-                tax=Decimal(item.get("tax", 0)),
-                total=Decimal(item["price"]) * item["quantity"],
+                product=item["product"],
+                quantity=quantity,
+                price=price,
+                tax=line_tax,
+                total=(price * quantity).quantize(Decimal("0.00")),
             )
 
-            # ✅ Reduce product stock
-            product.stock_quantity -= item["quantity"]
-            product.save(update_fields=["stock_quantity"])
-
-        # ✅ Return order instance
         return order
 
 
@@ -127,6 +135,8 @@ class PaymentSerializer(serializers.ModelSerializer):
 class OrderTrackingSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     payment = serializers.SerializerMethodField()
+    tax_percent = serializers.SerializerMethodField()
+    
 
     class Meta:
         model = OrderDetails
@@ -148,6 +158,7 @@ class OrderTrackingSerializer(serializers.ModelSerializer):
             "delivered_at",
             "items",
             "payment",
+            "tax_percent",
         ]
 
     def get_payment(self, obj):
@@ -155,7 +166,16 @@ class OrderTrackingSerializer(serializers.ModelSerializer):
             customer=obj.customer, order_id=obj.order_number
         ).first()
         return PaymentSerializer(payment).data if payment else None
-
+    
+    def get_tax_percent(self, obj):
+        """Return GST percentage based on stored subtotal & tax."""
+        try:
+            if obj.subtotal and obj.subtotal > 0:
+                percent = (obj.tax / obj.subtotal) * 100
+                return float(round(percent, 2))   # Example: 18.0
+        except:
+            return 0
+        return 0
 
 class GSTSettingSerializer(serializers.ModelSerializer):
     class Meta:

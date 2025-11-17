@@ -86,6 +86,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
 class OrderDetailsSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     customer_name = serializers.CharField(source="customer.full_name", read_only=True)
+    tax_percent = serializers.SerializerMethodField()
 
 
     class Meta:
@@ -109,6 +110,7 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
             "delivered_at",
             "ordered_at",
             "items",
+            "tax_percent"
         ]
         read_only_fields = ["order_number", "ordered_at"]
 
@@ -145,6 +147,19 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
 
         instance.save()
         return instance
+
+    def get_tax_percent(self, obj):
+        """Return GST percentage based on stored subtotal & tax."""
+        try:
+            if obj.subtotal and obj.subtotal > 0:
+                percent = (obj.tax / obj.subtotal) * 100
+                return float(round(percent, 2))   # Example: 18.0
+        except:
+            return 0
+        return 0
+    
+    
+    
     
 class ContactusSerializer(serializers.ModelSerializer):
 
@@ -209,7 +224,6 @@ class OfferDetailsSerializer(serializers.ModelSerializer):
         return value.strip().title()
 
 
-
 class ProductWithOfferSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.category_name', read_only=True)
     offer_price = serializers.SerializerMethodField()
@@ -239,82 +253,158 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
             "created_by",
         ]
 
-    # --- Offer calculation ---
+    # ---------------------------------------
+    #  OFFER HELPERS  (MUST NOT REMOVE)
+    # ---------------------------------------
+    def _offer_is_active(self, offer):
+        """Check if an offer is active."""
+        if not offer or not offer.is_active:
+            return False
+
+        if not offer.offer_percentage:
+            return False
+
+        today = timezone.now().date()
+        try:
+            if offer.start_date and offer.end_date:
+                return offer.start_date <= today <= offer.end_date
+        except:
+            return True
+
+        return True
+
+    def _get_active_offer(self, obj):
+        """Return first valid offer from prefetched list."""
+        for off in obj.offers.all():
+            if self._offer_is_active(off):
+                return off
+        return None
+
+    # ---------------------------------------
+    # OFFER DISPLAY VALUES
+    # ---------------------------------------
     def get_offer_price(self, obj):
-        """
-        Returns discounted price if an active offer exists.
-        Safely uses Decimal arithmetic.
-        """
-        offer = obj.offers.filter(is_active=True).first()
-        if offer and offer.offer_percentage:
-            try:
-                price = obj.price or Decimal("0.00")
-                offer_percentage = Decimal(offer.offer_percentage) / Decimal("100")
-
-                discounted_price = price * (Decimal("1.00") - offer_percentage)
-
-                # Round to 2 decimal places
-                return discounted_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            except Exception as e:
-                return price
+        offer = self._get_active_offer(obj)
+        if offer:
+            price = Decimal(obj.price)
+            pct = Decimal(offer.offer_percentage) / Decimal(100)
+            discounted = price * (Decimal(1) - pct)
+            return float(discounted.quantize(Decimal("0.01")))
         return None
 
     def get_offer_percentage(self, obj):
-        offer = obj.offers.filter(is_active=True).first()
-        return offer.offer_percentage if offer and offer.offer_percentage else None
+        offer = self._get_active_offer(obj)
+        return offer.offer_percentage if offer else None
 
-    # --- Normalize on save ---
-    def validate_product_name(self, value):
-        return normalize_product_name(value)
-
-    # --- Variant Logic ---
+    # ---------------------------------------
+    # VARIANT when main OUT OF STOCK
+    # ---------------------------------------
     def get_active_variant(self, obj):
-        """Return variant details if main is out of stock."""
-        if obj.parent:  # variant itself, skip
+        if obj.parent:
             return None
 
-        if obj.stock_quantity <= 0 or not obj.is_available:
-            variant = obj.variants.filter(is_available=True, stock_quantity__gt=0).first()
-            if variant:
+        if obj.stock_quantity <= 0 or obj.is_available is False:
+            v = obj.variants.filter(is_available=True, stock_quantity__gt=0).first()
+            if v:
                 return {
-                    "id": variant.id,
-                    "product_name": variant.product_name,
-                    "price": float(variant.price),
-                    "offer_price": self.get_offer_price(variant),
-                    "quantity": variant.quantity,
-                    "quantity_unit": variant.quantity_unit,
-                    "stock_quantity": variant.stock_quantity,
+                    "id": v.id,
+                    "product_name": v.product_name,
+                    "price": float(v.price),
+                    "offer_price": self.get_offer_price(v),
+                    "quantity": v.quantity,
+                    "quantity_unit": v.quantity_unit,
+                    "stock_quantity": v.stock_quantity,
                 }
         return None
 
-    # --- Adjust Response ---
+    # ---------------------------------------
+    # FINAL OUTPUT LOGIC
+    # ---------------------------------------
     def to_representation(self, instance):
-        """Return adjusted representation for display logic."""
         rep = super().to_representation(instance)
-        display_product = get_display_product(instance)
 
-        # ✅ If a variant replaces main, show variant details
-        if display_product != instance:
-            rep["id"] = display_product.id
-            rep["product_name"] = format_name(display_product.product_name)
-            rep["price"] = float(display_product.price)
-            rep["offer_price"] = self.get_offer_price(display_product)
-            rep["quantity"] = display_product.quantity
-            rep["quantity_unit"] = display_product.quantity_unit
-            rep["stock_quantity"] = display_product.stock_quantity
-            rep["product_image"] = (
-                display_product.product_image.url if display_product.product_image else None
-            )
-            rep["is_available"] = display_product.is_available
-            rep["active_variant"] = None  # hide nested field to avoid redundancy
+        raw_cat = rep.get("category_name")
+        if raw_cat:
+            rep["category_name"] = format_category_name(raw_cat)
 
-        else:
-            if rep.get("product_name"):
-                rep["product_name"] = format_name(rep["product_name"])
-            if rep.get("category_name"):
-                rep["category_name"] = format_name(rep["category_name"]).title()
+        main_offer = self._get_active_offer(instance)
 
+        # Find variant with stock
+        variant_in_stock = None
+        for v in instance.variants.all():
+            if v.is_available and v.stock_quantity > 0:
+                variant_in_stock = v
+                break
+
+        # Find variant with offer
+        variant_with_offer = None
+        for v in instance.variants.all():
+            if v.is_available and v.stock_quantity > 0:
+                if self._get_active_offer(v):
+                    variant_with_offer = v
+                    break
+
+        # ----------------------------------------------------------
+        # RULE A — MAIN HAS OFFER  → ALWAYS SHOW MAIN
+        # ----------------------------------------------------------
+        if main_offer:
+            rep["product_name"] = format_name(rep["product_name"])
+            rep["offer_price"] = self.get_offer_price(instance)
+            rep["offer_percentage"] = self.get_offer_percentage(instance)
+            return rep
+
+        # ----------------------------------------------------------
+        # RULE B — MAIN NO OFFER + VARIANT HAS OFFER → SHOW VARIANT
+        # ----------------------------------------------------------
+        if variant_with_offer:
+            v = variant_with_offer
+            rep["id"] = v.id
+            rep["product_name"] = format_name(v.product_name)
+            rep["price"] = float(v.price)
+            rep["offer_price"] = self.get_offer_price(v)
+            rep["offer_percentage"] = self.get_offer_percentage(v)
+            rep["quantity"] = v.quantity
+            rep["quantity_unit"] = v.quantity_unit
+            rep["stock_quantity"] = v.stock_quantity
+            rep["product_image"] = v.product_image.url if v.product_image else None
+            rep["is_available"] = v.is_available
+            rep["active_variant"] = None
+            return rep
+
+        # ----------------------------------------------------------
+        # RULE C — NO OFFER ANYWHERE → STOCK LOGIC
+        # ----------------------------------------------------------
+
+        # main in stock → show main
+        if instance.stock_quantity > 0:
+            rep["product_name"] = format_name(rep["product_name"])
+            rep["offer_price"] = None
+            rep["offer_percentage"] = None
+            return rep
+
+        # main out of stock → variant in stock → show variant
+        if variant_in_stock:
+            v = variant_in_stock
+            rep["id"] = v.id
+            rep["product_name"] = format_name(v.product_name)
+            rep["price"] = float(v.price)
+            rep["offer_price"] = None
+            rep["offer_percentage"] = None
+            rep["quantity"] = v.quantity
+            rep["quantity_unit"] = v.quantity_unit
+            rep["stock_quantity"] = v.stock_quantity
+            rep["product_image"] = v.product_image.url if v.product_image else None
+            rep["is_available"] = v.is_available
+            rep["active_variant"] = None
+            return rep
+
+        # main + variant out of stock → show main
+        rep["product_name"] = format_name(rep["product_name"])
+        rep["offer_price"] = None
+        rep["offer_percentage"] = None
         return rep
+
+
 #Dashboard Serializers
 
 class DashboardStatsSerializer(serializers.Serializer):
@@ -520,6 +610,8 @@ class ProductFeedbackSerializer(serializers.ModelSerializer):
     
 
 class NotificationSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source="product.id", read_only=True)
+    product_name = serializers.CharField(source="product.product_name", read_only=True)
     order_number = serializers.CharField(source="order.order_number", read_only=True)
 
     class Meta:
@@ -530,7 +622,21 @@ class NotificationSerializer(serializers.ModelSerializer):
             "message",
             "type",
             "order_number",
+            "product_id",
+            "product_name",
             "is_read",
             "created_at",
-            "read_at"
+            "read_at",
         ]
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        product_name = rep.get("product_name")
+        if product_name:
+            rep["product_name"] = format_name(product_name)
+
+        return rep
+
+
+# serializers.py
+
