@@ -56,6 +56,13 @@ urlpatterns = [
 
     path("customer-notifications/<int:customer_id>/", CustomerNotifications.as_view(), name="Customer-Notifications"),
     path("readnotifications/<int:id>/", MarkNotificationRead.as_view(), name="Mark-Notification-Read"),
+    path("readnotifications/all/<int:customer_id>/", MarkAllNotificationsRead.as_view(),  name="Mark-All-Notifications"),
+    path("notification/<int:id>/", DeleteNotification.as_view(),  name="Delete-Notification"),
+    path("notifications/clear/<int:customer_id>/", ClearAllNotifications.as_view(),  name="Clear-All-Notifications"),
+
+    path("checkout-initiate/", CheckoutInitiate.as_view(), name="Checkout-Initiate"),
+    path("checkout-validate/", CheckoutValidate.as_view(), name="Checkout-Validate"),
+
 
 
 ]

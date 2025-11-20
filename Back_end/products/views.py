@@ -24,7 +24,8 @@ from django.utils import timezone
 from django.db.models.functions import TruncDate,Coalesce,Cast
 from django.db.models import Prefetch, Q
 from payment.models import GSTSetting
-from .utils import amount_in_words_indian,link_callback
+from django.db import transaction
+from .utils import *
 import os
 from xhtml2pdf import default
 from django.conf import settings
@@ -417,6 +418,8 @@ class ProductListAPIView(APIView):
 
         # --- 3️⃣ Serialize all products (no pagination) ---
         serializer = ProductWithOfferSerializer(qs.order_by("-created_at"), many=True)
+        
+
 
         # --- 4️⃣ Response ---
         return Response({
@@ -856,10 +859,19 @@ class StockAvailability(APIView):
 
         try:
             product = Product.objects.get(id=product_id)
+
+            # 🔥 Calculate available stock using ACTIVE reservations
+            active_qty = ProductReservation.objects.filter(
+                product=product,
+                reserved_until__gt=timezone.now()
+            ).aggregate(total=Sum("quantity"))["total"] or 0
+
+            available_stock = product.stock_quantity - active_qty
+
             return Response({
                 "status": True,
                 "product_id": product_id,
-                "stock": product.stock_quantity  # change to your stock field name
+                "stock": available_stock
             }, status=status.HTTP_200_OK)
 
         except Product.DoesNotExist:
@@ -867,7 +879,7 @@ class StockAvailability(APIView):
                 "status": False,
                 "message": "Product not found"
             }, status=status.HTTP_404_NOT_FOUND)
-        
+
 
 class FavoriteToggleView(APIView):
 
@@ -1351,19 +1363,25 @@ class GlobalProductSearchView(generics.ListAPIView):
 
 class CustomerNotifications(APIView):
     def get(self, request, customer_id):
-        # Only show unread notifications
-        notifications = Notification.objects.filter(
-            customer_id=customer_id,
-            is_read=False
-        )
 
-        serializer = NotificationSerializer(notifications, many=True)
+        # 🔥 Auto-clear expired reservations (quick & safe)
+        product_ids = ProductReservation.objects.values_list("product_id", flat=True).distinct()
+        for pid in product_ids:
+            try:
+                product = Product.objects.get(id=pid)
+                product.available_stock()  # triggers cleanup
+            except Product.DoesNotExist:
+                pass
+
+        notifications = Notification.objects.filter(customer_id=customer_id).order_by('-created_at')
+        unread_count = Notification.objects.filter(customer_id=customer_id, is_read=False).count()
 
         return Response({
             "success": True,
-            "total": notifications.count(),
-            "data": serializer.data
+            "total": unread_count,
+            "data": NotificationSerializer(notifications, many=True).data
         })
+
 
 
 class MarkNotificationRead(APIView):
@@ -1374,3 +1392,184 @@ class MarkNotificationRead(APIView):
             return Response({"success": True, "message": "Notification marked as read"})
         except Notification.DoesNotExist:
             return Response({"success": False, "message": "Notification not found"}, status=404)
+        
+class MarkAllNotificationsRead(APIView):
+    def put(self, request, customer_id):
+        Notification.objects.filter(customer_id=customer_id, is_read=False).update(is_read=True)
+
+        return Response({"success": True})
+
+class DeleteNotification(APIView):
+    def delete(self, request, id):
+        try:
+            Notification.objects.get(id=id).delete()
+            return Response({"success": True})
+        except Notification.DoesNotExist:
+            return Response({"success": False, "message": "Not found"}, status=404)
+
+class ClearAllNotifications(APIView):
+    def delete(self, request, customer_id):
+        Notification.objects.filter(customer_id=customer_id).delete()
+        return Response({"success": True})
+
+
+RESERVATION_MINUTES = 10
+
+class CheckoutInitiate(APIView):
+
+    def post(self, request):
+        data = request.data
+        user_id = data.get("user_id")
+        cart = data.get("cart", [])
+
+        if not user_id or not isinstance(cart, list) or not cart:
+            return Response({"status": False, "message": "Invalid payload"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = CustomerDetails.objects.get(id=user_id)
+        except CustomerDetails.DoesNotExist:
+            return Response({"status": False, "message": "User not found"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Normalize cart to dict {product_id: qty}
+        cart_map = {}
+        for it in cart:
+            pid = int(it.get("product_id"))
+            qty = int(it.get("qty", 0))
+            if qty <= 0:
+                continue
+            cart_map[pid] = cart_map.get(pid, 0) + qty
+
+        if not cart_map:
+            return Response({"status": False, "message": "No valid items"}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated_items = []
+        removed_items = []
+        reserved_items = []
+
+        # We'll run everything inside a DB transaction and lock product rows to avoid races
+        with transaction.atomic():
+            # Lock product rows in a deterministic order to avoid deadlocks
+            products_qs = Product.objects.select_for_update().filter(id__in=list(cart_map.keys())).order_by('id')
+
+            # Build map of product objects
+            products = {p.id: p for p in products_qs}
+
+            now = timezone.now()
+            expire_at = now + timedelta(minutes=RESERVATION_MINUTES)
+
+            for pid, requested_qty in cart_map.items():
+                product = products.get(pid)
+                if not product:
+                    removed_items.append(pid)
+                    continue
+
+                # Clear expired reservations for this product (so availability is accurate)
+                ProductReservation.objects.filter(product=product, reserved_until__lt=now).delete()
+
+                # compute reserved quantity by others (exclude this user)
+                reserved_by_others = ProductReservation.objects.filter(
+                    product=product,
+                    reserved_until__gt=now
+                ).exclude(user=user).aggregate(total=Sum("quantity"))["total"] or 0
+
+                available = product.stock_quantity - reserved_by_others
+                if available <= 0:
+                    # not available at all: remove from cart
+                    removed_items.append(pid)
+                    # also remove any existing reservation by this user (if present)
+                    ProductReservation.objects.filter(product=product, user=user).delete()
+                    continue
+
+                # If requested > available -> reduce
+                reserve_qty = min(requested_qty, available)
+                if reserve_qty < requested_qty:
+                    updated_items.append({"id": pid, "old_qty": requested_qty, "new_qty": reserve_qty})
+
+                # create or update a reservation for this user/product
+                pr, created = ProductReservation.objects.get_or_create(
+                    product=product,
+                    user=user,
+                    defaults={"quantity": reserve_qty, "reserved_until": expire_at}
+                )
+                if not created:
+                    # update existing reservation to new qty and extend time
+                    pr.quantity = reserve_qty
+                    pr.reserved_until = expire_at
+                    pr.save()
+
+                # Prepare reserved item details to return to client
+                reserved_items.append({
+                    "product_id": pid,
+                    "qty": reserve_qty,
+                    "product_name": product.product_name,
+                    "price": str(product.price),         # JSON friendly
+                    "offer_price": str(product.offer_price) if hasattr(product, "offer_price") and product.offer_price is not None else None,
+                    "product_image": product.product_image.url if product.product_image else None,
+                })
+
+        return Response({
+            "status": True,
+            "reserved_items": reserved_items,
+            "updated_items": updated_items,
+            "removed_items": removed_items,
+            "message": "Reserved",
+        }, status=status.HTTP_200_OK)
+    
+    
+class CheckoutValidate(APIView):
+    def post(self, request):
+        user_id = request.data.get("user_id")
+        if not user_id:
+            return Response({"status": False, "message": "Invalid user"}, status=400)
+
+        try:
+            user = CustomerDetails.objects.get(id=user_id)
+        except CustomerDetails.DoesNotExist:
+            return Response({"status": False, "message": "User not found"}, status=400)
+
+        now = timezone.now()
+        cart = ProductReservation.objects.filter(user=user)
+
+        removed_items = []
+        updated_items = []
+        valid_items = []
+
+        for r in cart:
+            product = r.product
+
+            # 1) Expired reservation
+            if r.reserved_until < now:
+                removed_items.append(product.id)
+                r.delete()
+                continue
+
+            # 2) Check if stock still valid
+            reserved_by_others = ProductReservation.objects.filter(
+                product=product,
+                reserved_until__gt=now
+            ).exclude(user=user).aggregate(total=Sum("quantity"))["total"] or 0
+
+            available = product.stock_quantity - reserved_by_others
+
+            if available <= 0:
+                removed_items.append(product.id)
+                r.delete()
+                continue
+
+            # 3) Fix qty if needed
+            if r.quantity > available:
+                updated_items.append({"id": product.id, "new_qty": available})
+                r.quantity = available
+                r.save()
+
+            valid_items.append({"id": product.id, "qty": r.quantity})
+
+        if removed_items or updated_items:
+            return Response({
+                "status": False,
+                "removed_items": removed_items,
+                "updated_items": updated_items,
+                "valid_items": valid_items
+            })
+
+        return Response({"status": True})

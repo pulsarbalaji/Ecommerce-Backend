@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import *
 from .utils import get_display_product
 from decimal import Decimal, ROUND_HALF_UP
+from django.db.models import Sum
 
 def normalize_category_name(name: str):
     """Convert spaces to underscores and lowercase for DB storage"""
@@ -229,6 +230,8 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
     offer_price = serializers.SerializerMethodField()
     offer_percentage = serializers.SerializerMethodField()
     active_variant = serializers.SerializerMethodField()
+    available_stock = serializers.SerializerMethodField()
+
 
     class Meta:
         model = Product
@@ -244,6 +247,7 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
             "quantity",
             "quantity_unit",
             "stock_quantity",
+            "available_stock",
             "is_available",
             "average_rating",
             "active_variant",
@@ -272,6 +276,16 @@ class ProductWithOfferSerializer(serializers.ModelSerializer):
             return True
 
         return True
+    
+    def get_available_stock(self, obj):
+        """Stock shown to users = total stock - sum of all active reservations"""
+
+        active_qty = ProductReservation.objects.filter(
+            product=obj,
+            reserved_until__gt=timezone.now()
+        ).aggregate(total=Sum("quantity"))["total"] or 0
+
+        return obj.stock_quantity - active_qty
 
     def _get_active_offer(self, obj):
         """Return first valid offer from prefetched list."""

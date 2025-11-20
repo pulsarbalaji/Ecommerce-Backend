@@ -327,6 +327,9 @@ class CreateOrderAPIView(APIView):
                     # Check again before deduction
                     if product.stock_quantity < quantity:
                         raise ValueError(f"Insufficient stock for {product.product_name}")
+                    
+                    product.temp_stock = max(product.temp_stock - quantity, 0)
+                    product.temp_reserved_until = None
 
                     # Deduct stock
                     product.stock_quantity -= quantity

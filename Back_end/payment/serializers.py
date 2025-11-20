@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from decimal import Decimal
+from decimal import Decimal,ROUND_HALF_UP
 from .models import Payment,GSTSetting,CourierChargeSetting
 from products.models import OrderDetails, OrderItem
 from auth_model.models import CustomerDetails
@@ -77,22 +77,24 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         items_data = validated_data.pop("items")
-        
+        # tax_percent is write_only; default to 0 if not provided
         gst_percent = Decimal(validated_data.pop("tax_percent", 0))
+        # shipping_cost might be missing or a string/Decimal — coerce to Decimal
         shipping_cost = Decimal(validated_data.get("shipping_cost", 0))
 
         # ---------- SUBTOTAL ----------
         subtotal = sum(
-            Decimal(item["price"]) * item["quantity"]
+            (Decimal(item["price"]) * int(item["quantity"]))
             for item in items_data
         ).quantize(Decimal("0.00"))
 
         # ---------- TAX ----------
-        tax_total = (subtotal * gst_percent / 100).quantize(Decimal("0.00"))
+        tax_total = (subtotal * gst_percent / Decimal("100")).quantize(Decimal("0.00"))
 
-        # ---------- TOTAL ---------- (₹ round to nearest integer)
+        # ---------- TOTAL ---------- (round to nearest integer rupee)
         total_amount = subtotal + tax_total + shipping_cost
-        total_amount = Decimal(round(total_amount))   # ← FINAL FIX
+        # round to nearest integer with half-up behavior
+        total_amount = total_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
         validated_data["subtotal"] = subtotal
         validated_data["tax"] = tax_total
@@ -103,19 +105,30 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
 
         # ---------- CREATE ORDER ITEMS ----------
         for item in items_data:
+            # If item["product"] is a PK, you should resolve it to instance here.
+            # Many nested serializers pass actual model instances already; adjust as needed.
+            product = item["product"]
             price = Decimal(item["price"])
-            quantity = item["quantity"]
+            quantity = int(item["quantity"])
 
-            line_tax = (price * quantity * gst_percent / 100).quantize(Decimal("0.00"))
+            # tax for line
+            line_tax = (price * quantity * gst_percent / Decimal("100")).quantize(Decimal("0.00"))
+            # line total usually includes price*qty + tax (adjust if your model differs)
+            line_total = (price * quantity + line_tax).quantize(Decimal("0.00"))
 
             OrderItem.objects.create(
                 order=order,
-                product=item["product"],
+                product=product,
                 quantity=quantity,
                 price=price,
                 tax=line_tax,
-                total=(price * quantity).quantize(Decimal("0.00")),
+                total=line_total,
             )
+
+            # decrement stock and save — ensure product is a model instance
+            if hasattr(product, "stock_quantity"):
+                product.stock_quantity = max(product.stock_quantity - quantity, 0)
+                product.save(update_fields=["stock_quantity"])
 
         return order
 

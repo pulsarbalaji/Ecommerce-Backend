@@ -115,7 +115,7 @@ class SetNewPasswordView(APIView):
     def post(self, request):
         uid = request.data.get("uid")
         token = request.data.get("token")
-        password = request.data.get("new_password")
+        password = request.data.get("password")
 
         if not (uid and token and password):
             return Response({"status": False, "message": "Missing fields"}, status=400)
@@ -428,7 +428,7 @@ class GoogleRegisterView(APIView):
                 )
 
             # ✅ Create new Auth user
-            user = Auth.objects.create(email=email, login_method="google")
+            user = Auth.objects.create(email=email, login_method="google", is_active=True)
 
             # 🔑 If user is newly created, also create CustomerDetails
             

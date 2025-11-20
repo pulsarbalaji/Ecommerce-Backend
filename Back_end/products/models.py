@@ -4,7 +4,9 @@ from django.utils.translation import gettext_lazy as _
 import uuid
 from django.utils import timezone
 from datetime import date
-from django.db.models import Avg
+from django.db.models import Avg,Sum
+
+
 
 class Category(models.Model):
     category_name = models.CharField(max_length=100, unique=True)
@@ -37,6 +39,7 @@ class Product(models.Model):
     product_image = models.ImageField(upload_to="products/", blank=True, null=True)
 
     stock_quantity = models.PositiveIntegerField(default=0)
+
     is_available = models.BooleanField(default=True)
     reserved_by = models.ForeignKey("auth_model.CustomerDetails",on_delete=models.SET_NULL,null=True,blank=True,related_name="reserved_products")
     reserved_until = models.DateTimeField(null=True, blank=True)
@@ -62,6 +65,31 @@ class Product(models.Model):
         self.reserved_by = None
         self.reserved_until = None
         self.save()
+    
+    def clear_expired_reservations(self):
+        ProductReservation.objects.filter(
+            product=self,
+            reserved_until__lt=timezone.now()
+        ).delete()
+    
+    def available_stock(self, for_user=None):
+    # Clear expired reservations
+        self.clear_expired_reservations()
+
+        # Total reserved by other users only
+        qs = ProductReservation.objects.filter(
+            product=self,
+            reserved_until__gt=timezone.now(),
+        )
+
+        if for_user:
+            qs = qs.exclude(user=for_user)
+
+        reserved_by_others = qs.aggregate(total=Sum("quantity"))["total"] or 0
+
+        return self.stock_quantity - reserved_by_others
+
+
         
     def __str__(self):
         return self.product_name
@@ -319,3 +347,15 @@ class Notification(models.Model):
         self.is_read = True
         self.read_at = timezone.now()
         self.save(update_fields=["is_read", "read_at"])
+
+
+class ProductReservation(models.Model):
+    user = models.ForeignKey(CustomerDetails, on_delete=models.CASCADE)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField(default=1)
+
+    reserved_until = models.DateTimeField()       # expires individually
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user", "product")     # one reservation per user-product
