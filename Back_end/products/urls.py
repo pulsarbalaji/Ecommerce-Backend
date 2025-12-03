@@ -40,15 +40,18 @@ urlpatterns = [
 
     path("productvariant/", ProductVariant.as_view(), name="Product-Variant"),
     path("productvariant/<int:pk>/", ProductVariant.as_view(), name="Product-Variant"),
-    path("productvariantfillter/", ProductVariantFillter.as_view(), name="Product-Variant"),
+    path("productvariantfilter/", ProductVariantFillter.as_view(), name="Product-Variant"),
     path("mainproductlist/", MainProductDropdown.as_view(), name="MainProduct-Dropdown"),
 
     path("feedback/<int:product_id>/", ProductFeedbackAPIView.as_view(), name="product-feedback"),
+
     path("product-feedback-list/<int:product_id>/", ProductFeedbackListAPIView.as_view(), name="product-feedback-list"),
     path("product-rating-summary/<int:product_id>/", ProductRatingSummaryAPIView.as_view(),name="Product-Rating-Summary"),
     path("product-feedback-filter/<int:product_id>/", ProductFeedbackFilterAPIView.as_view(),name="ProductFeedback-filter"),
-    path("admin/feedback/<int:pk>/", AdminFeedbackCRUDAPIView.as_view(),name="Admin-Feedback-View"),
-    path("admin/feedback/filter/", FeedbackFilterAPIView.as_view(),name ="Admin-Feedback-Filter"),
+    path("admin-feedback-list/", AdminReviewListAPIView.as_view(),name ="admin-feedback-list"),
+    path("admin-approval/<int:review_id>/", AdminReviewStatusAPIView.as_view(),name ="Admin-Review-Status"),
+    path("admin-feedback/<int:review_id>/", AdminReviewDetailAPIView.as_view(),name ="Admin-Review-view"),
+    path("admin-feedback-delete/<int:review_id>/", AdminReviewDeleteAPIView.as_view(),name ="Admin-Review-Delete"),
 
 
     path("orders/search/", GlobalOrderSearchView.as_view(), name="global-order-search"),
@@ -62,6 +65,10 @@ urlpatterns = [
 
     path("checkout-initiate/", CheckoutInitiate.as_view(), name="Checkout-Initiate"),
     path("checkout-validate/", CheckoutValidate.as_view(), name="Checkout-Validate"),
+
+    path("orders/print-address/", PrintAddressPDFView.as_view(), name="Print-Address-PDF"),
+    path("single-orders/print-address/", PrintSingleAddressPDFView.as_view(), name="single-Print-Address-PDF"),
+    path("orders/unprinted/", UnprintedOrdersView.as_view(), name="Unprinted-Orders"),
 
 
 

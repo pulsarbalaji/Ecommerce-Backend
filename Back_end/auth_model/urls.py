@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import (LoginView,SetNewPasswordView,AdminDetailsView,ForgotPasswordView,CustomerListView,ForgotPasswordCustomer,
-GoogleRegisterView,GoogleLoginView,EmailRegisterStep1,EmailRegisterStep2,CustomerEmailAPIView,CustomerDetailsAPIView,
+GoogleAuthView,EmailRegisterStep1,EmailRegisterStep2,CustomerEmailAPIView,CustomerDetailsAPIView,
 PhoneRegisterStep1,PhoneRegisterStep2,PhoneLoginStep1,PhoneLoginStep2,LogoutView,VerifyLoginOTPView)
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -23,8 +23,7 @@ urlpatterns = [
     path("customerslist/", CustomerListView.as_view(), name="customer-list"),
     path("customerslist/<int:pk>/", CustomerListView.as_view(), name="customer-detail"),
 
-    path("google/", GoogleRegisterView.as_view(), name="google-register"),
-    path("google/login/", GoogleLoginView.as_view(), name="google-login"),
+    path("google/", GoogleAuthView.as_view(), name="google-Login"),
 
     path("register/email-step1/", EmailRegisterStep1.as_view(),name="Email-register"),
     path("register/email-step2/", EmailRegisterStep2.as_view(),name="Email-register"),

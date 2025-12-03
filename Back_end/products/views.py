@@ -26,6 +26,7 @@ from django.db.models import Prefetch, Q
 from payment.models import GSTSetting
 from django.db import transaction
 from .utils import *
+from reportlab.lib.units import mm
 import os
 from xhtml2pdf import default
 from django.conf import settings
@@ -37,7 +38,40 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
 from django.db.models import Count, Avg
+from math import ceil
 from xhtml2pdf.default import DEFAULT_FONT
+
+from reportlab.platypus import Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+from io import BytesIO
+
+from reportlab.platypus import Table, TableStyle
+from reportlab.lib import colors
+
+
+class AdminReviewPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+    def get_paginated_response(self, data):
+        total_count = self.page.paginator.count
+        page_size = self.get_page_size(self.request)
+        total_pages = ceil(total_count / page_size)
+
+        return Response({
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "page_size": page_size,
+            "current_page": self.page.number,
+            "next": self.get_next_link(),
+            "previous": self.get_previous_link(),
+            "results": data
+        })
 
 def normalize_category_name(name: str):
 
@@ -191,11 +225,23 @@ class OrderPagination(PageNumberPagination):
     page_size_query_param = "page_size"
     max_page_size = 100
 
+    def get_paginated_response(self, data):
+        total_count = self.page.paginator.count
+        page_size = self.get_page_size(self.request)
+        total_pages = ceil(total_count / page_size)
+
+        return Response({
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "page_size": page_size,
+            "current_page": self.page.number,
+            "next": self.get_next_link(),
+            "previous": self.get_previous_link(),
+            "results": data
+        })
+
 
 class OrderDetailsView(generics.GenericAPIView):
-    """
-    CRUD API for Orders (with pagination)
-    """
 
     serializer_class = OrderDetailsSerializer
     pagination_class = OrderPagination
@@ -204,17 +250,22 @@ class OrderDetailsView(generics.GenericAPIView):
         return OrderDetails.objects.all().order_by("-created_at")
 
     def get(self, request, pk=None):
+        # SINGLE ORDER
         if pk:
             order = get_object_or_404(OrderDetails, pk=pk)
             serializer = self.get_serializer(order)
             return Response({"status": True, "data": serializer.data})
 
+        # PAGINATED LIST
         queryset = self.get_queryset()
         page = self.paginate_queryset(queryset)
+
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
+            # 🚀 THIS automatically returns the custom pagination format
+            return self.paginator.get_paginated_response(serializer.data)
 
+        # NO PAGINATION (rare)
         serializer = self.get_serializer(queryset, many=True)
         return Response({"status": True, "data": serializer.data})
 
@@ -315,7 +366,8 @@ class InvoicePDFView(APIView):
             "order": order,
             "customer": {
                 "name": f"{order.first_name or ''} {order.last_name or ''}".strip(),
-                "address": order.shipping_address,
+                "shipping_address": order.shipping_address,
+                "billing_address": order.billing_address,
                 "contact": order.contact_number,
             },
             "company": company,
@@ -1081,84 +1133,81 @@ class MainProductDropdown(APIView):
             status=status.HTTP_200_OK,
         )
 
-
 class ProductFeedbackAPIView(APIView):
 
-
     def get_customer(self, user):
-        """Return CustomerDetails linked to the logged-in Auth user."""
         try:
             return user.customer_details
         except CustomerDetails.DoesNotExist:
             return None
 
     def get(self, request, product_id):
-        """✅ Fetch feedback for this user and product"""
         customer = self.get_customer(request.user)
         if not customer:
-            return Response({
-                "status": False,
-                "message": "Customer profile not found."
-            }, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"status": False, "message": "Customer profile not found."})
 
-        feedback = ProductFeedback.objects.filter(product_id=product_id, user=customer).first()
+        feedback = ProductFeedback.objects.filter(
+            product_id=product_id, user=customer
+        ).first()
+
         if not feedback:
-            return Response({
-                "status": False,
-                "message": "No feedback found for this user.",
-                "data": None
-            }, status=status.HTTP_404_NOT_FOUND)
+            return Response({"status": False, "message": "No feedback found.", "data": None})
 
         serializer = ProductFeedbackSerializer(feedback)
         return Response({
             "status": True,
-            "message": "Feedback fetched successfully.",
+            "message": "Feedback fetched.",
             "data": serializer.data
-        }, status=status.HTTP_200_OK)
+        })
 
     def post(self, request, product_id):
-        """✅ Create or update feedback for the logged-in customer"""
         product = get_object_or_404(Product, id=product_id)
         customer = self.get_customer(request.user)
 
         if not customer:
-            return Response({
-                "status": False,
-                "message": "Customer profile not found."
-            }, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"status": False, "message": "Customer profile not found."})
 
-        # Check if feedback already exists
         feedback = ProductFeedback.objects.filter(product=product, user=customer).first()
 
+        # ⭐ Add manual approval in request.data
+        rating = int(request.data.get("rating", 0))
+        request_data = request.data.copy()
+        
+        # ⭐ Manual approval logic
+        if rating >= 4:
+            request_data["is_approved"] = True
+        else:
+            request_data["is_approved"] = False
+
+        # ------------------------------------
+        # ⭐ UPDATE FEEDBACK
+        # ------------------------------------
         if feedback:
-            # Update existing feedback
-            serializer = ProductFeedbackSerializer(feedback, data=request.data, partial=True)
+            serializer = ProductFeedbackSerializer(
+                feedback, data=request_data, partial=True
+            )
             if serializer.is_valid():
-                serializer.save()
+                serializer.save(product=product, user=customer)
                 return Response({
                     "status": True,
-                    "message": "Feedback updated successfully.",
+                    "message": "Feedback updated.",
                     "data": serializer.data
-                }, status=status.HTTP_200_OK)
-            return Response({
-                "status": False,
-                "errors": serializer.errors
-            }, status=status.HTTP_400_BAD_REQUEST)
+                })
+            return Response({"status": False, "errors": serializer.errors})
 
-        # Create new feedback
-        serializer = ProductFeedbackSerializer(data=request.data)
+        # ------------------------------------
+        # ⭐ CREATE FEEDBACK
+        # ------------------------------------
+        serializer = ProductFeedbackSerializer(data=request_data)
         if serializer.is_valid():
             serializer.save(product=product, user=customer)
             return Response({
                 "status": True,
-                "message": "Feedback added successfully.",
+                "message": "Feedback added.",
                 "data": serializer.data
-            }, status=status.HTTP_201_CREATED)
+            }, status=201)
 
-        return Response({
-            "status": False,
-            "errors": serializer.errors
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": False, "errors": serializer.errors})
     
 class FeedbackPagination(PageNumberPagination):
     page_size = 5              # ⭐ Change page size here (10 reviews per call)
@@ -1171,7 +1220,7 @@ class ProductFeedbackListAPIView(APIView):
     pagination_class = FeedbackPagination
 
     def get(self, request, product_id):
-        feedbacks = ProductFeedback.objects.filter(product_id=product_id).order_by('-created_at')
+        feedbacks = ProductFeedback.objects.filter(product_id=product_id,is_approved=True).order_by('-created_at')
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(feedbacks, request)
         serializer = ProductFeedbackSerializer(page, many=True)
@@ -1183,7 +1232,7 @@ class ProductFeedbackListAPIView(APIView):
     
 class ProductRatingSummaryAPIView(APIView):
     def get(self, request, product_id):
-        feedbacks = ProductFeedback.objects.filter(product_id=product_id)
+        feedbacks = ProductFeedback.objects.filter(product_id=product_id,is_approved=True)
 
         # total ratings
         total = feedbacks.count()
@@ -1238,65 +1287,149 @@ class ProductFeedbackFilterAPIView(generics.ListAPIView):
             "results": response.data["results"]
         })
 
-class AdminFeedbackCRUDAPIView(APIView):
-    # Optional: Only admins
-    # permission_classes = [IsAuthenticated, IsAdminUser]
 
-    def get_object(self, pk):
-        try:
-            return ProductFeedback.objects.get(pk=pk)
-        except ProductFeedback.DoesNotExist:
-            return None
 
-    def get(self, request, pk):
-        feedback = self.get_object(pk)
-        if not feedback:
-            return Response({"message": "Feedback not found"}, status=404)
+class AdminReviewListAPIView(APIView):
+    pagination_class = AdminReviewPagination
 
-        serializer = ProductFeedbackSerializer(feedback)
-        return Response(serializer.data)
+    def get_all_variants(self, product_id):
+        ids = [product_id]
+        queue = [product_id]
 
-    def put(self, request, pk):
-        feedback = self.get_object(pk)
-        if not feedback:
-            return Response({"message": "Feedback not found"}, status=404)
+        while queue:
+            pid = queue.pop(0)
+            children = Product.objects.filter(parent_id=pid).values_list("id", flat=True)
+            for cid in children:
+                ids.append(cid)
+                queue.append(cid)
 
-        serializer = ProductFeedbackSerializer(feedback, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({"message": "Feedback updated", "data": serializer.data})
-        return Response(serializer.errors, status=400)
+        return ids
 
-    def delete(self, request, pk):
-        feedback = self.get_object(pk)
-        if not feedback:
-            return Response({"message": "Feedback not found"}, status=404)
+    def get_all_category_products(self, category_id):
+        product_ids = list(Product.objects.filter(category_id=category_id).values_list("id", flat=True))
+        queue = product_ids.copy()
 
-        feedback.delete()
-        return Response({"message": "Feedback deleted"}, status=200)    
+        while queue:
+            pid = queue.pop(0)
+            children = Product.objects.filter(parent_id=pid).values_list("id", flat=True)
+            for cid in children:
+                if cid not in product_ids:
+                    product_ids.append(cid)
+                    queue.append(cid)
 
-class FeedbackFilterAPIView(APIView):
+        return product_ids
+
 
     def get(self, request):
+
         product_id = request.query_params.get("product_id")
+        category_id = request.query_params.get("category_id")
         rating = request.query_params.get("rating")
+        ordering = request.query_params.get("ordering", "-created_at")  
+        # default sort newest first
 
-        if not product_id:
-            return Response({"message": "product_id is required"}, status=400)
+        qs = ProductFeedback.objects.all().select_related("product", "user")
 
-        qs = ProductFeedback.objects.filter(product_id=product_id)
+        # ---- FILTERS ----
+        if category_id:
+            product_ids = self.get_all_category_products(category_id)
+            qs = qs.filter(product_id__in=product_ids)
+
+        if product_id:
+            product_ids = self.get_all_variants(product_id)
+            qs = qs.filter(product_id__in=product_ids)
 
         if rating:
             qs = qs.filter(rating=rating)
 
-        qs = qs.order_by("-created_at")
+        # ---- SERVER SIDE SORTING ----
+        allowed_fields = [
+            "product_name",
+            "user_name",
+            "rating",
+            "is_approved",
+            "created_at",
+        ]
 
-        serializer = ProductFeedbackSerializer(qs, many=True)
+        sort_field = ordering.lstrip("-")
+        sort_direction = "-" if ordering.startswith("-") else ""
 
-        return Response({
-            "count": qs.count(),
-            "results": serializer.data
-        })
+        if sort_field in allowed_fields:
+            if sort_field == "product_name":
+                qs = qs.order_by(f"{sort_direction}product__product_name")
+            elif sort_field == "user_name":
+                qs = qs.order_by(f"{sort_direction}user__name")
+            else:
+                qs = qs.order_by(f"{sort_direction}{sort_field}")
+        else:
+            qs = qs.order_by("-created_at")
+
+        # ---- PAGINATION ----
+        paginator = self.pagination_class()
+        paginated_qs = paginator.paginate_queryset(qs, request)
+
+        serializer = ProductFeedbackSerializer(paginated_qs, many=True)
+        return paginator.get_paginated_response(serializer.data)
+    
+class AdminReviewDetailAPIView(APIView):
+
+    def format_product_name(self, name):
+        return name.replace("_", " ").title()
+
+    def get(self, request, review_id):
+        try:
+            review = ProductFeedback.objects.select_related("product", "user").get(id=review_id)
+        except ProductFeedback.DoesNotExist:
+            return Response(
+                {"status": False, "message": "Review not found"},
+                status=404
+            )
+
+        product_name = self.format_product_name(review.product.product_name)
+
+        data = {
+            "id": review.id,
+            "product_name": product_name,
+            "user_name": review.user.full_name,
+            "rating": review.rating,
+            "comment": review.comment,
+            "is_approved": review.is_approved,
+            "created_at": review.created_at,
+        }
+
+        return Response({"status": True, "data": data}, status=200)
+
+
+class AdminReviewStatusAPIView(APIView):
+
+    def post(self, request, review_id):
+        review = get_object_or_404(ProductFeedback, id=review_id)
+        action = request.data.get("action")  # approve / reject
+
+        if action == "approve":
+            review.is_approved = True
+        elif action == "reject":
+            review.is_approved = False
+        else:
+            return Response({"status": False, "message": "Invalid action"}, status=400)
+
+        review.save()
+        return Response({"status": True, "message": f"Review {action}d"})
+
+class AdminReviewDeleteAPIView(APIView):
+    def delete(self, request, review_id):
+        try:
+            review = ProductFeedback.objects.get(id=review_id)
+            review.delete()
+            return Response({
+                "status": True,
+                "message": "Review deleted successfully"
+            }, status=200)
+        except ProductFeedback.DoesNotExist:
+            return Response({
+                "status": False,
+                "message": "Review not found"
+            }, status=404)
 
 
 class GlobalOrderSearchView(generics.ListAPIView):
@@ -1426,7 +1559,7 @@ class CheckoutInitiate(APIView):
             return Response({"status": False, "message": "Invalid payload"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            user = CustomerDetails.objects.get(id=user_id)
+            user = CustomerDetails.objects.get(auth_id=user_id)
         except CustomerDetails.DoesNotExist:
             return Response({"status": False, "message": "User not found"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1523,7 +1656,7 @@ class CheckoutValidate(APIView):
             return Response({"status": False, "message": "Invalid user"}, status=400)
 
         try:
-            user = CustomerDetails.objects.get(id=user_id)
+            user = CustomerDetails.objects.get(auth_id=user_id)
         except CustomerDetails.DoesNotExist:
             return Response({"status": False, "message": "User not found"}, status=400)
 
@@ -1573,3 +1706,554 @@ class CheckoutValidate(APIView):
             })
 
         return Response({"status": True})
+
+def mark_order_as_printed(order_ids):
+    OrderDetails.objects.filter(id__in=order_ids).update(is_printed=True)
+
+import re
+
+
+def extract_location_details(address):
+    if not address:
+        return {"district": "", "pincode": ""}
+
+    location = {
+        "district": "",
+        "pincode": ""
+    }
+
+    # Extract pincode (6 digits)
+    pincode_match = re.search(r'\b(\d{6})\b', address)
+    if pincode_match:
+        location["pincode"] = pincode_match.group(1)
+
+    # Convert to lowercase for matching
+    addr = address.lower()
+
+    # Split by comma AND by hyphen to catch patterns like "salem - 636015"
+    parts = re.split(r'[,-]', addr)
+
+    # Clean parts
+    clean_parts = [p.strip() for p in parts if p.strip()]
+
+    # Find the district:
+    # Rule: the part *just before* the pincode or hyphen
+    for part in clean_parts:
+        if location["pincode"] in part:
+            continue  # skip pincode part
+
+    # Find district by scanning for valid words
+    for part in clean_parts:
+        # Skip numeric-only elements or pure door numbers
+        if part.replace("/", "").isdigit():
+            continue
+
+        # Skip long area descriptions
+        if len(part.split()) > 3:
+            continue
+        
+        # District candidate: the last short text part
+        district_candidate = part.strip()
+        if len(district_candidate) > 2:
+            location["district"] = district_candidate
+            break
+
+    return location
+
+
+class PrintAddressPDFView(APIView):
+    def post(self, request):
+        from reportlab.platypus import Table, TableStyle, Paragraph
+        from reportlab.lib import colors
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        order_ids = request.data.get("order_ids", [])
+        orders_qs = OrderDetails.objects.filter(id__in=order_ids)
+
+        if not orders_qs.exists():
+            return HttpResponse("No orders found", status=404)
+
+        orders_qs.update(is_printed=True)
+
+        # -----------------------------------------
+        # Register DejaVuSans ONLY for ₹ in table
+        # -----------------------------------------
+        font_path = os.path.join(settings.BASE_DIR, "static", "fonts", "DejaVuSans.ttf")
+        pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
+
+        # -----------------------------------------
+        # Default text styles (Helvetica)
+        # -----------------------------------------
+        styles = getSampleStyleSheet()
+
+        normal = styles["Normal"]
+        normal.fontSize = 11
+        normal.leading = 14
+
+        bold = styles["BodyText"]
+        bold.fontSize = 13
+        bold.leading = 16
+
+        # -----------------------------------------
+        # Helper: Format price to ₹10
+        # -----------------------------------------
+        def format_inr(value):
+            val = float(value)
+            if val.is_integer():
+                val = int(val)
+            return f"₹{val}"
+
+        # -----------------------------------------
+        # Company info
+        # -----------------------------------------
+        company = {
+            "name": "Vallalar Naturals from Village Kannama",
+            "address": "No.2, South Street, Abatharanapuram, Serakuppam Post, Vadalur - 607303.",
+            "phone": "+91 7639157615",
+        }
+
+        logo_path = os.path.join(settings.BASE_DIR, "static", "image", "Logo.jpeg")
+
+        # -----------------------------------------
+        # Build order list
+        # -----------------------------------------
+        parsed_orders = []
+        for o in orders_qs:
+
+            loc = extract_location_details(o.shipping_address)
+
+            items = []
+            for itm in o.items.all():
+                qty_clean = str(itm.product.quantity).rstrip("0").rstrip(".")
+                unit = itm.product.quantity_unit or ""
+                clean_name = itm.product.product_name.replace("_", " ").title()
+
+                product_name = f"{clean_name} ({qty_clean} {unit})".strip()
+
+                items.append({
+                    "product": product_name,
+                    "qty": itm.quantity,
+                    "price": format_inr(itm.price)
+                })
+
+            parsed_orders.append({
+                "name": f"{o.first_name} {o.last_name}",
+                "address": o.shipping_address,
+                "district": loc.get("district", ""),
+                "pincode": loc.get("pincode", ""),
+                "phone": o.contact_number,
+                "order_number": o.order_number,
+                "courier_service": o.preferred_courier_service,
+                "items": items
+            })
+
+        # Split 4 per page
+        pages = []
+        for i in range(0, len(parsed_orders), 4):
+            chunk = parsed_orders[i:i+4]
+            while len(chunk) < 4:
+                chunk.append(None)
+            pages.append(chunk)
+
+        # -----------------------------------------
+        # PDF Setup
+        # -----------------------------------------
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+
+        block_w = 105 * mm
+        block_h = 148.5 * mm
+
+        positions = [
+            (0, block_h),
+            (block_w, block_h),
+            (0, 0),
+            (block_w, 0)
+        ]
+
+        # -----------------------------------------
+        # Render Pages
+        # -----------------------------------------
+        for page in pages:
+
+            c.setLineWidth(0.4)
+            c.setDash(2, 2)
+            c.line(block_w, 0, block_w, A4[1])
+            c.line(0, block_h, A4[0], block_h)
+            c.setDash()
+
+            for idx, order in enumerate(page):
+                x, y = positions[idx]
+
+                c.rect(x, y, block_w, block_h)
+
+                if os.path.exists(logo_path):
+                    try:
+                        logo_w = 60 * mm
+                        logo_h = 60 * mm
+
+                        # ⭐ PERFECT CENTERING
+                        logo_x = x + (block_w - logo_w) / 2
+                        logo_y = y + (block_h - logo_h) / 2
+
+                        c.saveState()
+                        c.setFillAlpha(0.10)  # 10% opacity
+                        c.drawImage(
+                            logo_path,
+                            logo_x,
+                            logo_y,
+                            width=logo_w,
+                            height=logo_h,
+                            preserveAspectRatio=True,
+                            mask='auto'
+                        )
+                        c.restoreState()
+                    except:
+                        pass
+
+
+                if not order:
+                    continue
+
+                tx = x + 10 * mm
+                ty = y + block_h - 12 * mm
+
+                # -----------------------------------------
+                # FROM SECTION (SPACING PERFECT)
+                # -----------------------------------------
+                p = Paragraph("<b>From:</b>", bold)
+                p.wrap(block_w - 20*mm, 20*mm)
+                p.drawOn(c, tx, ty)
+                ty -= 6 * mm     # smaller spacing – removes unwanted blank line
+
+                # FROM section lines except phone
+                for text in [
+                    company["name"],
+                    company["address"],
+                ]:
+                    p = Paragraph(text, normal)
+                    p.wrap(block_w - 20 * mm, 30 * mm)
+                    p.drawOn(c, tx, ty)
+                    ty -= 10 * mm     # normal spacing
+
+                # ⭐ reduce space ABOVE Phone line
+                ty += 5 * mm          # move UP 6mm (reduces upper gap)
+
+                # Phone line
+                p = Paragraph(f"Phone: {company['phone']}", normal)
+                p.wrap(block_w - 20 * mm, 30 * mm)
+                p.drawOn(c, tx, ty)
+                ty -= 10 * mm         # keep lower spacing normal
+
+
+                # -----------------------------------------
+                # TO SECTION (SPACING PERFECT)
+                # -----------------------------------------
+                p = Paragraph("<b>To:</b>", bold)
+                p.wrap(block_w - 20*mm, 20*mm)
+                p.drawOn(c, tx, ty)
+                ty -= 6 * mm   
+
+                for text in [
+                    order["name"],
+                    order["address"],
+                    f"District: {order['district']}",
+                    f"Pincode: {order['pincode']}",
+                    f"Phone: {order['phone']}"
+                ]:
+                    p = Paragraph(text, normal)
+                    p.wrap(block_w - 20 * mm, 35 * mm)
+                    p.drawOn(c, tx, ty)
+                    ty -= 10 * mm   # only district, pincode, phone get smaller spacing
+                    if "District" in text or "Pincode" in text or "Phone" in text:
+                        ty += 4 * mm   # adjust: 10-4 = 6mm same as your original
+
+                # -----------------------------------------
+                # ORDER NUMBER
+                # -----------------------------------------
+                p = Paragraph(f"<b>Courier Name: {order['courier_service']}</b>", bold)
+                p.wrap(block_w - 10 * mm, 10 * mm)
+                p.drawOn(c, tx, ty)
+                ty -= 8 * mm
+
+                p = Paragraph(f"<b>Order No: {order['order_number']}</b>", bold)
+                p.wrap(block_w - 20 * mm, 20 * mm)
+                p.drawOn(c, tx, ty)
+                ty -= 8 * mm
+
+                # -----------------------------------------
+                # TABLE (ONLY THIS USES DEJAVUSANS)
+                # -----------------------------------------
+                table_data = [["Product", "Qty", "Price"]]
+                for item in order["items"]:
+                    table_data.append([
+                        item["product"],
+                        str(item["qty"]),
+                        item["price"]
+                    ])
+
+                table = Table(table_data, colWidths=[50*mm, 20*mm, 20*mm])
+
+                table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (-1, -1), 'DejaVuSans'),
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                    ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+                    ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
+                    ('GRID', (0, 0), (-1, -1), 0.3, colors.black),
+                    ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                    ('TOPPADDING', (0, 0), (-1, -1), 3),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+
+                tw, th = table.wrap(block_w - 20 * mm, 9999)
+
+                ty -= th
+                if ty < y + 5 * mm:
+                    ty = y + 5 * mm
+
+                table.drawOn(c, tx, ty)
+
+            c.showPage()
+
+        c.save()
+        buffer.seek(0)
+
+        return HttpResponse(
+            buffer,
+            content_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=address_labels.pdf"}
+        )
+
+class PrintSingleAddressPDFView(APIView):
+    def post(self, request):
+        from reportlab.platypus import Table, TableStyle, Paragraph
+        from reportlab.lib import colors
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        order_id = request.data.get("order_id")
+        if not order_id:
+            return HttpResponse("Order ID missing", status=400)
+
+        try:
+            o = OrderDetails.objects.get(id=order_id)
+            o.is_printed = True
+            o.save()
+        except:
+            return HttpResponse("Order not found", status=404)
+        
+
+        # Register DejaVuSans for ₹ symbol
+        font_path = os.path.join(settings.BASE_DIR, "static", "fonts", "DejaVuSans.ttf")
+        pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
+
+        # Styles
+        styles = getSampleStyleSheet()
+        normal = styles["Normal"]
+        normal.fontSize = 11
+        normal.leading = 11
+
+        bold = styles["BodyText"]
+        bold.fontSize = 13
+        bold.leading = 16
+
+        def format_inr(value):
+            v = float(value)
+            if v.is_integer(): v = int(v)
+            return f"₹{v}"
+
+        # Company details
+        company = {
+            "name": "Vallalar Naturals from Village Kannama",
+            "address": "No.2, South Street, Abatharanapuram, Serakuppam Post, Vadalur - 607303.",
+            "phone": "+91 7639157615",
+        }
+
+        logo_path = os.path.join(settings.BASE_DIR, "static", "image", "Logo.jpeg")
+
+        # Extract location
+        loc = extract_location_details(o.shipping_address)
+
+        # Build product list
+        items_data = []
+        for item in o.items.all():
+            qty_clean = str(item.product.quantity).rstrip("0").rstrip(".")
+            unit = item.product.quantity_unit or ""
+            clean_name = item.product.product_name.replace("_", " ").title()
+            product_name = f"{clean_name} ({qty_clean} {unit})"
+
+            items_data.append([
+                product_name,
+                str(item.quantity),
+                format_inr(item.price)
+            ])
+
+        # PDF Setup
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+
+        block_w = A4[0]
+        block_h = A4[1] / 2      # Half A4 sheet
+
+        positions = [
+            (0, block_h),   # Top half
+            (0, 0)          # Bottom half
+        ]
+
+        # Duplicate order data into 2 halves
+        halves = [1, 2]
+
+        for idx, part in enumerate(halves):
+            x, y = positions[idx]
+
+            c.rect(x, y, block_w, block_h)
+
+            # Watermark
+            if os.path.exists(logo_path):
+                try:
+                    logo_w = 70 * mm
+                    logo_h = 70 * mm
+                    logo_x = x + (block_w - logo_w) / 2
+                    logo_y = y + (block_h - logo_h) / 2
+
+                    c.saveState()
+                    c.setFillAlpha(0.10)
+                    c.drawImage(logo_path, logo_x, logo_y,
+                                width=logo_w, height=logo_h,
+                                preserveAspectRatio=True, mask='auto')
+                    c.restoreState()
+                except:
+                    pass
+
+            # Start writing text
+            tx = x + 15 * mm
+            ty = y + block_h - 15 * mm
+
+            # FROM
+            p = Paragraph("<b>From:</b>", bold)
+            p.wrap(block_w - 30*mm, 20*mm)
+            p.drawOn(c, tx, ty)
+            ty -= 4 * mm   # reduced
+
+            # Company name + address
+            for text in [company["name"], company["address"]]:
+                p = Paragraph(text, normal)
+                p.wrap(block_w - 30*mm, 20*mm)
+                p.drawOn(c, tx, ty)
+                ty -= 6 * mm     # was 10mm, reduced heavily
+
+            # Phone line
+            p = Paragraph(f"Phone: {company['phone']}", normal)
+            p.wrap(block_w - 30*mm, 20*mm)
+            p.drawOn(c, tx, ty)
+            ty -= 6 * mm
+
+            # TO
+            p = Paragraph("<b>To:</b>", bold)
+            p.wrap(block_w - 30*mm, 20*mm)
+            p.drawOn(c, tx, ty)
+            ty -= 4 * mm   # reduced
+
+            for text in [
+                f"{o.first_name} {o.last_name}",
+                o.shipping_address,
+                f"District: {loc['district']}",
+                f"Pincode: {loc['pincode']}",
+                f"Phone:+91 {o.contact_number}",
+            ]:
+                p = Paragraph(text, normal)
+                p.wrap(block_w - 30*mm, 25*mm)
+                p.drawOn(c, tx, ty)
+
+                if "District" in text or "Pincode" in text or "Phone" in text:
+                    ty -= 5 * mm     # was 6mm
+                else:
+                    ty -= 6 * mm     # was 10mm earlier
+
+
+            # ------------------------------
+            # ORDER NUMBER (increase space ABOVE)
+            # ------------------------------
+            ty -= 4 * mm   # extra top spacing before Order No
+
+            p = Paragraph(f"<b>Order No: {o.order_number}</b>", bold)
+            p.wrap(block_w - 30*mm, 20*mm)
+            p.drawOn(c, tx, ty)
+            ty -= 10 * mm     # bigger gap after order no
+
+
+            # ------------------------------
+            # COURIER NAME (normal)
+            # ------------------------------
+            p = Paragraph(f"<b>Courier Name: {o.preferred_courier_service}</b>", bold)
+            p.wrap(block_w - 20 * mm, 20 * mm)
+            p.drawOn(c, tx, ty)
+            ty -= 5 * mm      # REDUCED gap (was 8mm)
+
+
+            # ------------------------------
+            # TABLE (reduced gap)
+            # ------------------------------
+            table_data = [["Product", "Qty", "Price"]] + items_data
+
+            table = Table(table_data, colWidths=[100*mm, 30*mm, 30*mm])
+            table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'DejaVuSans'),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('BOX', (0, 0), (-1, -1), 1, colors.black),
+            ]))
+
+            tw, th = table.wrap(block_w - 30*mm, 9999)
+
+            ty -= th   # draw tightly under courier name
+            table.drawOn(c, tx, ty)
+
+
+        c.showPage()
+        c.save()
+
+        buffer.seek(0)
+        return HttpResponse(
+            buffer,
+            content_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=single_address_label.pdf"}
+        )
+
+
+class UnprintedOrdersView(APIView):
+    """
+    GET /orders/unprinted/?from_date=2025-01-01&to_date=2025-01-31
+    """
+
+    def get(self, request):
+        from_date = request.GET.get("from_date")
+        to_date = request.GET.get("to_date")
+
+        # Base filter (unprinted orders)
+        queryset = OrderDetails.objects.filter(is_printed=False)
+
+        # Apply date filters only if values exist
+        if from_date:
+            try:
+                queryset = queryset.filter(created_at__date__gte=parse_date(from_date))
+            except:
+                return Response({"error": "Invalid from_date"}, status=400)
+
+        if to_date:
+            try:
+                queryset = queryset.filter(created_at__date__lte=parse_date(to_date))
+            except:
+                return Response({"error": "Invalid to_date"}, status=400)
+
+        # Serialize & return
+        serializer = OrderDetailsSerializer(queryset, many=True)
+        return Response({"status": True, "data": serializer.data}, status=200)

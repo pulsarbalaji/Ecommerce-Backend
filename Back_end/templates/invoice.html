@@ -12,15 +12,16 @@
     }
 
     body {
-  font-family: Arial, sans-serif;
-  margin: 20px;
-  font-size: 13px;
-  color: #333;
-  position: relative;
-}
-.inr {
-  font-family: 'DejaVuSans';
-}
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      font-size: 13px;
+      color: #333;
+      position: relative;
+    }
+
+    .inr {
+      font-family: 'DejaVuSans';
+    }
 
     .header {
       text-align: center;
@@ -44,6 +45,9 @@
       border: 1px solid #666;
       padding: 6px;
       text-align: center;
+      word-wrap: break-word;
+      word-break: break-word;
+      white-space: normal;
     }
 
     th {
@@ -98,7 +102,10 @@
           <td><strong>Contact:</strong> {{ customer.contact }}</td>
         </tr>
         <tr>
-          <td colspan="2"><strong>Address:</strong> {{ customer.address }}</td>
+          <td colspan="2"><strong>Shipping Address:</strong> {{ customer.shipping_address }}</td>
+        </tr>
+        <tr>
+          <td colspan="2"><strong>Billing Address:</strong> {{ customer.billing_address }}</td>
         </tr>
       </table>
     </div>
@@ -118,23 +125,37 @@
         {% for item in order.items.all %}
         <tr>
           <td>{{ forloop.counter }}</td>
-          <td>{{ item.product.product_name }}</td>
+          <td>{{ item.product.clean_name }}</td>
           <td>{{ item.quantity }}</td>
           <td>{{ item.price }}</td>
           <td>{{ item.total }}</td>
         </tr>
         {% empty %}
-        <tr><td colspan="5">No items found in this order.</td></tr>
+        <tr>
+          <td colspan="5">No items found in this order.</td>
+        </tr>
         {% endfor %}
       </tbody>
     </table>
 
     <div class="total-section">
       <table>
-        <tr><td><strong>Subtotal:</strong></td><td class="right">(<span class="inr">&#8377;</span>) {{ subtotal }}</td></tr>
-        <tr><td><strong>GST ({{ gst_percentage }}%):</strong></td><td class="right">(<span class="inr">&#8377;</span>) {{ gst_amount }}</td></tr>
-        <tr><td><strong>Shipping:</strong></td><td class="right">(<span class="inr">&#8377;</span>) {{ shipping }}</td></tr>
-        <tr><td><strong>Grand Total:</strong></td><td class="right"><strong>(<span class="inr">&#8377;</span>) {{ total_amount }}</strong></td></tr>
+        <tr>
+          <td><strong>Subtotal:</strong></td>
+          <td class="right">(<span class="inr">&#8377;</span>) {{ subtotal }}</td>
+        </tr>
+        <tr>
+          <td><strong>GST ({{ gst_percentage }}%):</strong></td>
+          <td class="right">(<span class="inr">&#8377;</span>) {{ gst_amount }}</td>
+        </tr>
+        <tr>
+          <td><strong>Shipping:</strong></td>
+          <td class="right">(<span class="inr">&#8377;</span>) {{ shipping }}</td>
+        </tr>
+        <tr>
+          <td><strong>Grand Total:</strong></td>
+          <td class="right"><strong>(<span class="inr">&#8377;</span>) {{ total_amount }}</strong></td>
+        </tr>
       </table>
     </div>
 
@@ -156,4 +177,5 @@
     </div>
   </div>
 </body>
+
 </html>

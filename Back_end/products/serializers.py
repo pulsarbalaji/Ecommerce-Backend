@@ -96,8 +96,10 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
             "id",
             "customer_name",
             "customer",
+            "contact_number",
             "order_number",
             "status",
+            "is_printed",
             "preferred_courier_service",
             "courier_number",
             "payment_method",
@@ -612,6 +614,7 @@ class ProductFeedbackSerializer(serializers.ModelSerializer):
             "user_name",
             "rating",
             "comment",
+            "is_approved",
             "created_at",
             "updated_at",
         ]
@@ -621,6 +624,14 @@ class ProductFeedbackSerializer(serializers.ModelSerializer):
         if not (1 <= value <= 5):
             raise serializers.ValidationError("Rating must be between 1 and 5.")
         return value
+    
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        product_name = rep.get("product_name")
+        if product_name:
+            rep["product_name"] = format_name(product_name)
+
+        return rep
     
 
 class NotificationSerializer(serializers.ModelSerializer):

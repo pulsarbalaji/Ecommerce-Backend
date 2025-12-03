@@ -8,6 +8,8 @@ from django.db.models import Avg,Sum
 
 
 
+
+
 class Category(models.Model):
     category_name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True, null=True)
@@ -89,7 +91,9 @@ class Product(models.Model):
 
         return self.stock_quantity - reserved_by_others
 
-
+    @property
+    def clean_name(self):
+        return self.product_name.replace("_", " ").title()
         
     def __str__(self):
         return self.product_name
@@ -152,6 +156,8 @@ class OrderDetails(models.Model):
     delivered_at = models.DateTimeField(blank=True, null=True)
 
     ordered_at = models.DateTimeField(auto_now_add=True)
+
+    is_printed = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -280,28 +286,29 @@ class FavoriteProduct(models.Model):
 
     def __str__(self):
         return f"{self.customer} - {self.product}"
-
-
+    
 class ProductFeedback(models.Model):
     product = models.ForeignKey("Product", on_delete=models.CASCADE, related_name="feedbacks")
     user = models.ForeignKey("auth_model.CustomerDetails", on_delete=models.CASCADE, related_name="product_feedbacks")
-    rating = models.PositiveSmallIntegerField(default=5)  # 1–5
-    comment = models.TextField(blank=True, null=True, max_length=1000)
+    rating = models.PositiveSmallIntegerField(default=5)  
+    comment = models.TextField(blank=True, null=True, max_length=200)
+    is_approved = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "product_feedback"
-        unique_together = ("product", "user")  # one feedback per user/product
+        unique_together = ("product", "user")
         ordering = ["-created_at"]
 
     def __str__(self):
         return f"{self.product.product_name} - {self.rating}⭐ by {self.user}"
 
-    # ✅ Update average rating on save or delete
     def save(self, *args, **kwargs):
+
         super().save(*args, **kwargs)
+
         self.update_product_rating()
 
     def delete(self, *args, **kwargs):
@@ -312,6 +319,7 @@ class ProductFeedback(models.Model):
         avg_rating = self.product.feedbacks.aggregate(avg=Avg("rating"))["avg"] or 0.0
         self.product.average_rating = round(avg_rating, 2)
         self.product.save(update_fields=["average_rating"])
+
 
 class Notification(models.Model):
 

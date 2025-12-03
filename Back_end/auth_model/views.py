@@ -395,122 +395,59 @@ class CustomerListView(generics.GenericAPIView):
             status=status.HTTP_200_OK,
         )
     
-
 if not firebase_admin._apps:
     firebase_admin.initialize_app()
 
-class GoogleRegisterView(APIView):
+class GoogleAuthView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         token = request.data.get("token")
-        full_name = request.data.get("full_name")
-        address = request.data.get("address")
-        dob = request.data.get("dob")
-        gender = request.data.get("gender")
-        profile_image = request.data.get("profile_image")
 
         if not token:
-            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "No token provided"}, status=400)
 
         try:
-            # 🔑 Verify Firebase ID token
-            decoded_token = firebase_auth.verify_id_token(token)
-            email = decoded_token.get("email")
+            # 🔍 Verify Firebase Token
+            decoded = firebase_auth.verify_id_token(token)
+            email = decoded.get("email")
+            full_name = decoded.get("name", "")
+            picture = decoded.get("picture")
 
             if not email:
-                return Response({"error": "Email not found in token"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "Email not found in Google account"}, status=400)
 
-            if Auth.objects.filter(email=email).exists():
+            # -------------------------------------------
+            # 1️⃣ CHECK IF USER EXISTS
+            # -------------------------------------------
+            user, created = Auth.objects.get_or_create(email=email)
+
+            # If newly created → set login method + activate account
+            if created:
+                user.login_method = "google"
+                user.is_active = True
+                user.save()
+
+            # If already exists but login method mismatch → stop
+            elif user.login_method != "google":
                 return Response(
-                    {"error": "This email is already registered. Please log in instead."},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {"error": "This email is registered using a different login method."},
+                    status=400
                 )
 
-            # ✅ Create new Auth user
-            user = Auth.objects.create(email=email, login_method="google", is_active=True)
-
-            # 🔑 If user is newly created, also create CustomerDetails
-            
-            CustomerDetails.objects.create(
-                    auth=user,
-                    full_name=full_name if full_name else decoded_token.get("name", ""),
-                    address=address,
-                    dob=dob,
-                    gender=gender,
-                    profile_image=profile_image  # Only if you handle image upload properly
-                )
-
-            # 🔑 Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
-            return Response({
-                "refresh": str(refresh),
-                "access": str(refresh.access_token),
-                "user": {
-                    "id": user.id,
-                    "email": user.email,
-                    "login_method": user.login_method,
-                    "customer": {
-                        "full_name": user.customer_details.full_name if hasattr(user, "customer_details") else None,
-                        "address": user.customer_details.address if hasattr(user, "customer_details") else None,
-                        "dob": user.customer_details.dob if hasattr(user, "customer_details") else None,
-                        "gender": user.customer_details.gender if hasattr(user, "customer_details") else None,
-                        "profile_image": (
-                            request.build_absolute_uri(user.customer_details.profile_image.url)
-                            if hasattr(user, "customer_details") and user.customer_details.profile_image
-                            else None
-                        ),
-                    },
-                },
-            })
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        
-class GoogleLoginView(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        token = request.data.get("token")
-        if not token:
-            return Response({
-                "message": "No token provided"
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            # Verify Firebase ID token
-            decoded_token = firebase_auth.verify_id_token(token)
-            email = decoded_token.get("email")
-            name = decoded_token.get("name")
-            picture = decoded_token.get("picture")
-
-            if not email:
-                return Response({
-                    "message": "Email not found in token"
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            try:
-                user = Auth.objects.get(email=email)
-            except Auth.DoesNotExist:
-                return Response(
-                    {"message": "This email is not registered. Please register first."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            if user.login_method != "google":
-                return Response(
-                    {"message": "This account is registered using a different login method."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Create or update CustomerDetails
+            # -------------------------------------------
+            # 2️⃣ Ensure CustomerDetails exists
+            # -------------------------------------------
             customer, c_created = CustomerDetails.objects.get_or_create(auth=user)
+
             if c_created:
-                customer.full_name = name or ""
+                customer.full_name = full_name
                 customer.profile_image = picture or None
                 customer.save()
 
-            # Generate JWT tokens
+            # -------------------------------------------
+            # 3️⃣ Generate Tokens
+            # -------------------------------------------
             refresh = RefreshToken.for_user(user)
 
             return Response({
@@ -543,10 +480,21 @@ class GoogleLoginView(APIView):
                 "message": str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
 
+
+
+
 class EmailRegisterStep1(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        email = request.data.get("email")
+
+        # 🔥 Block if email already registered (Google or Email)
+        if Auth.objects.filter(email=email).exists():
+            return Response(
+                {"error": "Email already registered. Please log in instead."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         serializer = EmailRegisterSerializer(data=request.data)
         if serializer.is_valid():
             otp_entry = serializer.save()
@@ -596,16 +544,30 @@ class CustomerEmailAPIView(APIView):
         if not email or not password:
             return Response({"error": "Email and password are required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # 🔥 Check if user exists
+        try:
+            user_obj = Auth.objects.get(email=email)
+        except Auth.DoesNotExist:
+            return Response({"error": "Invalid email or password"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 🔥 If registered via Google → block email login
+        if user_obj.login_method == "google":
+            return Response(
+                {"error": "This email is registered via Google. Please continue with Google Login."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Regular password authentication
         user = authenticate(request, email=email, password=password)
 
         if user is None:
-            return Response({"error": "Invalid email or password"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid email or password"}, status=status.HTTP_400_BAD_REQUEST)
 
         if not user.is_active:
             return Response({"error": "This account is disabled"}, status=status.HTTP_403_FORBIDDEN)
 
         refresh = RefreshToken.for_user(user)
-        user_data = AuthSerializer(user).data  
+        user_data = AuthSerializer(user).data
 
         return Response({
             "message": "Login successful",
@@ -616,6 +578,7 @@ class CustomerEmailAPIView(APIView):
 
 
 class CustomerDetailsAPIView(APIView):
+    
 
     def post(self, request):
         auth_id = request.data.get("auth")
