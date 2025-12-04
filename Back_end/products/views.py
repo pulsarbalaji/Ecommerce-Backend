@@ -1760,14 +1760,18 @@ def extract_location_details(address):
 
     return location
 
-
 class PrintAddressPDFView(APIView):
     def post(self, request):
+        import os, math
+        from io import BytesIO
         from reportlab.platypus import Table, TableStyle, Paragraph
         from reportlab.lib import colors
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.pdfgen import canvas
 
+        # -------------------------- FETCH ORDERS --------------------------
         order_ids = request.data.get("order_ids", [])
         orders_qs = OrderDetails.objects.filter(id__in=order_ids)
 
@@ -1776,70 +1780,51 @@ class PrintAddressPDFView(APIView):
 
         orders_qs.update(is_printed=True)
 
-        # -----------------------------------------
-        # Register DejaVuSans ONLY for ₹ in table
-        # -----------------------------------------
-        font_path = os.path.join(settings.BASE_DIR, "static", "fonts", "DejaVuSans.ttf")
-        pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
+        # -------------------------- STYLES --------------------------
+        wrap_style = ParagraphStyle(
+            name="wrap_style",
+            fontName="Helvetica",
+            fontSize=9,
+            leading=10
+        )
 
-        # -----------------------------------------
-        # Default text styles (Helvetica)
-        # -----------------------------------------
         styles = getSampleStyleSheet()
-
         normal = styles["Normal"]
+        normal.fontName = "Helvetica"
         normal.fontSize = 11
         normal.leading = 14
 
         bold = styles["BodyText"]
+        bold.fontName = "Helvetica-Bold"
         bold.fontSize = 13
         bold.leading = 16
 
-        # -----------------------------------------
-        # Helper: Format price to ₹10
-        # -----------------------------------------
-        def format_inr(value):
-            val = float(value)
-            if val.is_integer():
-                val = int(val)
-            return f"₹{val}"
-
-        # -----------------------------------------
-        # Company info
-        # -----------------------------------------
         company = {
             "name": "Vallalar Naturals from Village Kannama",
-            "address": "No.2, South Street, Abatharanapuram, Serakuppam Post, Vadalur - 607303.",
+            "address": "Vadalur - 607303.",
             "phone": "+91 7639157615",
         }
 
         logo_path = os.path.join(settings.BASE_DIR, "static", "image", "Logo.jpeg")
 
-        # -----------------------------------------
-        # Build order list
-        # -----------------------------------------
+        # -------------------------- PARSE ORDERS --------------------------
         parsed_orders = []
         for o in orders_qs:
-
             loc = extract_location_details(o.shipping_address)
-
             items = []
+
             for itm in o.items.all():
                 qty_clean = str(itm.product.quantity).rstrip("0").rstrip(".")
                 unit = itm.product.quantity_unit or ""
                 clean_name = itm.product.product_name.replace("_", " ").title()
+                product_name = f"{clean_name} ({qty_clean} {unit})" if unit else clean_name
 
-                product_name = f"{clean_name} ({qty_clean} {unit})".strip()
-
-                items.append({
-                    "product": product_name,
-                    "qty": itm.quantity,
-                    "price": format_inr(itm.price)
-                })
+                items.append({"product": product_name, "qty": itm.quantity})
 
             parsed_orders.append({
-                "name": f"{o.first_name} {o.last_name}",
-                "address": o.shipping_address,
+                "order_obj": o,
+                "name": f"{o.first_name or ''} {o.last_name or ''}",
+                "address": o.shipping_address or "",
                 "district": loc.get("district", ""),
                 "pincode": loc.get("pincode", ""),
                 "phone": o.contact_number,
@@ -1848,385 +1833,367 @@ class PrintAddressPDFView(APIView):
                 "items": items
             })
 
-        # Split 4 per page
-        pages = []
-        for i in range(0, len(parsed_orders), 4):
-            chunk = parsed_orders[i:i+4]
-            while len(chunk) < 4:
-                chunk.append(None)
-            pages.append(chunk)
-
-        # -----------------------------------------
-        # PDF Setup
-        # -----------------------------------------
+        # -------------------------- PDF SETUP --------------------------
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
+        page_w, page_h = A4
 
         block_w = 105 * mm
         block_h = 148.5 * mm
 
         positions = [
-            (0, block_h),
-            (block_w, block_h),
-            (0, 0),
-            (block_w, 0)
+            (0, block_h), (block_w, block_h),
+            (0, 0), (block_w, 0)
         ]
 
-        # -----------------------------------------
-        # Render Pages
-        # -----------------------------------------
-        for page in pages:
+        BLOCK_WITH_HEADER_MAX = 4
+        BLOCK_TABLE_ONLY_MAX = 20
+        PRODUCT_COL_PADDING = 15 * mm
 
-            c.setLineWidth(0.4)
+        # -------------------------- UTILS --------------------------
+        def paragraph_lines_count(text, col_w):
+            p = Paragraph(text, wrap_style)
+            p.wrap(col_w, 9999)
+            h = p.height
+            lines = max(1, math.ceil(h / wrap_style.leading))
+            return lines, p
+
+        # -------------------------- FIXED HEADER (with wrap) --------------------------
+        def draw_paragraph(text, style, x, y, max_w, max_h):
+            p = Paragraph(text, style)
+            p.wrap(max_w, max_h)
+            p.drawOn(c, x, y)
+            return p.height  # Return height used
+
+        def draw_header(tx, ty, order):
+            """
+            Compact From/To header with controlled spacing.
+            Uses the same behaviour as your working 'write()' style.
+            """
+            avail = block_w - 20*mm  # width available inside block
+
+            def draw(text, style, reduce_mm):
+                nonlocal ty
+                p = Paragraph(text, style)
+                p.wrap(avail, 9999)      # ensure wrap happens BEFORE draw (prevents blPara error)
+                p.drawOn(c, tx, ty)
+                ty -= reduce_mm          # controlled spacing in mm
+
+            # ---------- FROM ----------
+            draw("<b>From:</b>", bold, 5*mm)
+            draw(company["name"], normal, 6*mm)
+            draw(company["address"], normal, 6*mm)
+            draw(f"Phone: {company['phone']}", normal, 8*mm)
+
+            # ---------- TO ----------
+            draw("<b>To:</b>", bold, 5*mm)
+            draw(order["name"], normal, 10*mm)
+            draw(order["address"], normal, 6*mm)
+            draw(f"District: {order['district']}", normal, 5*mm)
+            draw(f"Pincode: {order['pincode']}", normal, 5*mm)
+            draw(f"Phone: +91 {order['phone']}", normal, 10*mm)
+
+            # ---------- ORDER DETAILS ----------
+            draw(f"<b>Courier Name: {order['courier_service']}</b>", bold, 8*mm)
+            draw(f"<b>Order No: {order['order_number']}</b>", bold, 8*mm)
+
+            return ty
+
+
+        # -------------------------- TABLE DRAW --------------------------
+        def draw_table(tx, ty_top, rows, avail_w):
+            col_product = avail_w - PRODUCT_COL_PADDING
+            data = [["Product", "Qty"]]
+
+            for it in rows:
+                data.append([Paragraph(it["product"], wrap_style), str(it["qty"])])
+
+            tbl = Table(data, colWidths=[col_product, PRODUCT_COL_PADDING])
+            tbl.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('GRID', (0, 0), (-1, -1), 0.3, colors.black),
+            ]))
+
+            tw, th = tbl.wrap(avail_w, 9999)
+            tbl.drawOn(c, tx, ty_top - th)
+            return th
+
+        # -------------------------- PAGE START --------------------------
+        def draw_separators():
             c.setDash(2, 2)
-            c.line(block_w, 0, block_w, A4[1])
-            c.line(0, block_h, A4[0], block_h)
+            c.line(block_w, 0, block_w, page_h)
+            c.line(0, block_h, page_w, block_h)
             c.setDash()
 
-            for idx, order in enumerate(page):
-                x, y = positions[idx]
+        first_page = True
+        def start_page():
+            nonlocal first_page
+            if not first_page:
+                c.showPage()
+            draw_separators()
+            first_page = False
 
-                c.rect(x, y, block_w, block_h)
+        start_page()
 
-                if os.path.exists(logo_path):
-                    try:
-                        logo_w = 60 * mm
-                        logo_h = 60 * mm
+        block_index = 0
+        order_counter = 1
 
-                        # ⭐ PERFECT CENTERING
-                        logo_x = x + (block_w - logo_w) / 2
-                        logo_y = y + (block_h - logo_h) / 2
+        # -------------------------- MAIN LOOP --------------------------
+        for order in parsed_orders:
+            items = order["items"][:]
+            block_no = 1
 
-                        c.saveState()
-                        c.setFillAlpha(0.10)  # 10% opacity
-                        c.drawImage(
-                            logo_path,
-                            logo_x,
-                            logo_y,
-                            width=logo_w,
-                            height=logo_h,
-                            preserveAspectRatio=True,
-                            mask='auto'
-                        )
-                        c.restoreState()
-                    except:
-                        pass
+            # HEADER BLOCK
+            if block_index >= 4:
+                block_index = 0
+                start_page()
 
+            x, y = positions[block_index]
+            c.rect(x, y, block_w, block_h)
 
-                if not order:
-                    continue
+            # header position
+            tx = x + 10*mm
+            ty = y + block_h - 12*mm
 
-                tx = x + 10 * mm
-                ty = y + block_h - 12 * mm
+            ty_after = draw_header(tx, ty, order)
 
-                # -----------------------------------------
-                # FROM SECTION (SPACING PERFECT)
-                # -----------------------------------------
-                p = Paragraph("<b>From:</b>", bold)
-                p.wrap(block_w - 20*mm, 20*mm)
-                p.drawOn(c, tx, ty)
-                ty -= 6 * mm     # smaller spacing – removes unwanted blank line
+            avail = block_w - 20 * mm
+            product_col_w = avail - PRODUCT_COL_PADDING
 
-                # FROM section lines except phone
-                for text in [
-                    company["name"],
-                    company["address"],
-                ]:
-                    p = Paragraph(text, normal)
-                    p.wrap(block_w - 20 * mm, 30 * mm)
-                    p.drawOn(c, tx, ty)
-                    ty -= 10 * mm     # normal spacing
+            placed = []
+            used_rows = 0
 
-                # ⭐ reduce space ABOVE Phone line
-                ty += 5 * mm          # move UP 6mm (reduces upper gap)
+            while items and used_rows < BLOCK_WITH_HEADER_MAX:
+                lines, _ = paragraph_lines_count(items[0]["product"], product_col_w)
+                if used_rows + lines <= BLOCK_WITH_HEADER_MAX:
+                    placed.append(items.pop(0))
+                    used_rows += lines
+                else:
+                    break
 
-                # Phone line
-                p = Paragraph(f"Phone: {company['phone']}", normal)
-                p.wrap(block_w - 20 * mm, 30 * mm)
-                p.drawOn(c, tx, ty)
-                ty -= 10 * mm         # keep lower spacing normal
+            if placed:
+                draw_table(tx, ty_after, placed, avail)
 
+            # FOOTER centered
+            footer = f"C{order_counter}-{block_no}"
+            c.setFont("Helvetica", 7)
+            fw = c.stringWidth(footer, "Helvetica", 7)
+            c.drawString(x + 3*mm, y + 3*mm, footer)
 
-                # -----------------------------------------
-                # TO SECTION (SPACING PERFECT)
-                # -----------------------------------------
-                p = Paragraph("<b>To:</b>", bold)
-                p.wrap(block_w - 20*mm, 20*mm)
-                p.drawOn(c, tx, ty)
-                ty -= 6 * mm   
+            block_no += 1
+            block_index += 1
 
-                for text in [
-                    order["name"],
-                    order["address"],
-                    f"District: {order['district']}",
-                    f"Pincode: {order['pincode']}",
-                    f"Phone: {order['phone']}"
-                ]:
-                    p = Paragraph(text, normal)
-                    p.wrap(block_w - 20 * mm, 35 * mm)
-                    p.drawOn(c, tx, ty)
-                    ty -= 10 * mm   # only district, pincode, phone get smaller spacing
-                    if "District" in text or "Pincode" in text or "Phone" in text:
-                        ty += 4 * mm   # adjust: 10-4 = 6mm same as your original
+            # TABLE ONLY BLOCKS
+            while items:
+                if block_index >= 4:
+                    block_index = 0
+                    start_page()
 
-                # -----------------------------------------
-                # ORDER NUMBER
-                # -----------------------------------------
-                p = Paragraph(f"<b>Courier Name: {order['courier_service']}</b>", bold)
-                p.wrap(block_w - 10 * mm, 10 * mm)
-                p.drawOn(c, tx, ty)
-                ty -= 8 * mm
+                x2, y2 = positions[block_index]
+                c.rect(x2, y2, block_w, block_h)
 
-                p = Paragraph(f"<b>Order No: {order['order_number']}</b>", bold)
-                p.wrap(block_w - 20 * mm, 20 * mm)
-                p.drawOn(c, tx, ty)
-                ty -= 8 * mm
+                tx2 = x2 + 10*mm
+                ty2 = y2 + block_h - 12*mm
 
-                # -----------------------------------------
-                # TABLE (ONLY THIS USES DEJAVUSANS)
-                # -----------------------------------------
-                table_data = [["Product", "Qty", "Price"]]
-                for item in order["items"]:
-                    table_data.append([
-                        item["product"],
-                        str(item["qty"]),
-                        item["price"]
-                    ])
+                take = []
+                used = 0
 
-                table = Table(table_data, colWidths=[50*mm, 20*mm, 20*mm])
+                while items and used < BLOCK_TABLE_ONLY_MAX:
+                    lines, _ = paragraph_lines_count(items[0]["product"], product_col_w)
+                    if used + lines <= BLOCK_TABLE_ONLY_MAX:
+                        take.append(items.pop(0))
+                        used += lines
+                    else:
+                        break
 
-                table.setStyle(TableStyle([
-                    ('FONTNAME', (0, 0), (-1, -1), 'DejaVuSans'),
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-                    ('ALIGN', (1, 0), (1, -1), 'CENTER'),
-                    ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
-                    ('GRID', (0, 0), (-1, -1), 0.3, colors.black),
-                    ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
-                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
-                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                    ('TOPPADDING', (0, 0), (-1, -1), 3),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-                ]))
+                draw_table(tx2, ty2, take, avail)
 
-                tw, th = table.wrap(block_w - 20 * mm, 9999)
+                foot = f"C{order_counter}-{block_no}"
+                c.setFont("Helvetica", 7)
+                c.drawString(x2 + 3*mm, y2 + 3*mm, foot)
 
-                ty -= th
-                if ty < y + 5 * mm:
-                    ty = y + 5 * mm
+                block_no += 1
+                block_index += 1
 
-                table.drawOn(c, tx, ty)
+            order_counter += 1
 
-            c.showPage()
-
+        # -------------------------- END --------------------------
         c.save()
         buffer.seek(0)
-
-        return HttpResponse(
-            buffer,
+        return HttpResponse(buffer,
             content_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=address_labels.pdf"}
         )
+
+
 
 class PrintSingleAddressPDFView(APIView):
     def post(self, request):
         from reportlab.platypus import Table, TableStyle, Paragraph
         from reportlab.lib import colors
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.pdfgen import canvas
 
         order_id = request.data.get("order_id")
         if not order_id:
-            return HttpResponse("Order ID missing", status=400)
+            return HttpResponse("Order ID missing", 400)
 
         try:
             o = OrderDetails.objects.get(id=order_id)
             o.is_printed = True
             o.save()
         except:
-            return HttpResponse("Order not found", status=404)
-        
+            return HttpResponse("Order not found", 404)
 
-        # Register DejaVuSans for ₹ symbol
-        font_path = os.path.join(settings.BASE_DIR, "static", "fonts", "DejaVuSans.ttf")
-        pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
-
-        # Styles
+        # -------- STYLES --------
         styles = getSampleStyleSheet()
         normal = styles["Normal"]
+        normal.fontName = "Helvetica"
         normal.fontSize = 11
-        normal.leading = 11
+        normal.leading = 12
 
         bold = styles["BodyText"]
+        bold.fontName = "Helvetica-Bold"
         bold.fontSize = 13
         bold.leading = 16
 
-        def format_inr(value):
-            v = float(value)
-            if v.is_integer(): v = int(v)
-            return f"₹{v}"
+        wrap_style = ParagraphStyle(
+            "wrap_style",
+            fontName="Helvetica",
+            fontSize=10,
+            leading=12
+        )
 
-        # Company details
+        # -------- COMPANY --------
         company = {
             "name": "Vallalar Naturals from Village Kannama",
-            "address": "No.2, South Street, Abatharanapuram, Serakuppam Post, Vadalur - 607303.",
+            "address": "Vadalur - 607303.",
             "phone": "+91 7639157615",
         }
 
-        logo_path = os.path.join(settings.BASE_DIR, "static", "image", "Logo.jpeg")
-
-        # Extract location
+        # -------- LOCATION --------
         loc = extract_location_details(o.shipping_address)
 
-        # Build product list
-        items_data = []
+        # -------- BUILD ITEMS --------
+        items = []
         for item in o.items.all():
             qty_clean = str(item.product.quantity).rstrip("0").rstrip(".")
             unit = item.product.quantity_unit or ""
-            clean_name = item.product.product_name.replace("_", " ").title()
-            product_name = f"{clean_name} ({qty_clean} {unit})"
+            clean = item.product.product_name.replace("_", " ").title()
+            prod = f"{clean} ({qty_clean} {unit})"
+            items.append({"product": prod, "qty": item.quantity})
 
-            items_data.append([
-                product_name,
-                str(item.quantity),
-                format_inr(item.price)
-            ])
-
-        # PDF Setup
+        # -------- PDF SETUP --------
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
+        page_w, page_h = A4
 
-        block_w = A4[0]
-        block_h = A4[1] / 2      # Half A4 sheet
+        MAX_FIRST_PAGE_ROWS = 33
+        MAX_SECOND_PAGE_ROWS = 40
 
-        positions = [
-            (0, block_h),   # Top half
-            (0, 0)          # Bottom half
-        ]
+        # -------- COUNT WRAP ROWS --------
+        def count_lines(text, width):
+            p = Paragraph(text, wrap_style)
+            _, h = p.wrap(width, 9999)
+            lines = max(1, int(h / wrap_style.leading))
+            return lines, p
 
-        # Duplicate order data into 2 halves
-        halves = [1, 2]
+        col_width = 140 * mm
+        visual_rows = []
 
-        for idx, part in enumerate(halves):
-            x, y = positions[idx]
+        for it in items:
+            lines, p = count_lines(it["product"], col_width)
+            visual_rows.append({"product": p, "qty": str(it["qty"]), "lines": lines})
 
-            c.rect(x, y, block_w, block_h)
+        # SPLIT INTO TWO PAGES
+        page1_rows, page2_rows = [], []
+        total = 0
+        for row in visual_rows:
+            if total + row["lines"] <= MAX_FIRST_PAGE_ROWS:
+                page1_rows.append(row)
+                total += row["lines"]
+            else:
+                page2_rows.append(row)
 
-            # Watermark
-            if os.path.exists(logo_path):
-                try:
-                    logo_w = 70 * mm
-                    logo_h = 70 * mm
-                    logo_x = x + (block_w - logo_w) / 2
-                    logo_y = y + (block_h - logo_h) / 2
+        # -------- HEADER BLOCK --------
+        def draw_header():
+            tx = 15 * mm
+            ty = page_h - 15 * mm
 
-                    c.saveState()
-                    c.setFillAlpha(0.10)
-                    c.drawImage(logo_path, logo_x, logo_y,
-                                width=logo_w, height=logo_h,
-                                preserveAspectRatio=True, mask='auto')
-                    c.restoreState()
-                except:
-                    pass
-
-            # Start writing text
-            tx = x + 15 * mm
-            ty = y + block_h - 15 * mm
-
-            # FROM
-            p = Paragraph("<b>From:</b>", bold)
-            p.wrap(block_w - 30*mm, 20*mm)
-            p.drawOn(c, tx, ty)
-            ty -= 4 * mm   # reduced
-
-            # Company name + address
-            for text in [company["name"], company["address"]]:
-                p = Paragraph(text, normal)
-                p.wrap(block_w - 30*mm, 20*mm)
+            def write(text, style, reduce):
+                nonlocal ty
+                p = Paragraph(text, style)
+                p.wrap(page_w - 30 * mm, 9999)
                 p.drawOn(c, tx, ty)
-                ty -= 6 * mm     # was 10mm, reduced heavily
+                ty -= reduce
 
-            # Phone line
-            p = Paragraph(f"Phone: {company['phone']}", normal)
-            p.wrap(block_w - 30*mm, 20*mm)
-            p.drawOn(c, tx, ty)
-            ty -= 6 * mm
+            write("<b>From:</b>", bold, 5*mm)
+            write(company["name"], normal, 6*mm)
+            write(company["address"], normal, 6*mm)
+            write(f"Phone: {company['phone']}", normal, 8*mm)
 
-            # TO
-            p = Paragraph("<b>To:</b>", bold)
-            p.wrap(block_w - 30*mm, 20*mm)
-            p.drawOn(c, tx, ty)
-            ty -= 4 * mm   # reduced
+            write("<b>To:</b>", bold, 5*mm)
+            write(f"{o.first_name} {o.last_name}", normal, 6*mm)
+            write(o.shipping_address, normal, 6*mm)
+            write(f"District: {loc['district']}", normal, 5*mm)
+            write(f"Pincode: {loc['pincode']}", normal, 5*mm)
+            write(f"Phone: +91 {o.contact_number}", normal, 10*mm)
 
-            for text in [
-                f"{o.first_name} {o.last_name}",
-                o.shipping_address,
-                f"District: {loc['district']}",
-                f"Pincode: {loc['pincode']}",
-                f"Phone:+91 {o.contact_number}",
-            ]:
-                p = Paragraph(text, normal)
-                p.wrap(block_w - 30*mm, 25*mm)
-                p.drawOn(c, tx, ty)
+            write(f"<b>Order No: {o.order_number}</b>", bold, 10*mm)
+            write(f"<b>Courier Name: {o.preferred_courier_service}</b>", bold, 10*mm)
 
-                if "District" in text or "Pincode" in text or "Phone" in text:
-                    ty -= 5 * mm     # was 6mm
-                else:
-                    ty -= 6 * mm     # was 10mm earlier
+            return tx, ty
 
+        # -------- PAGE 1 --------
+        tx, ty = draw_header()
 
-            # ------------------------------
-            # ORDER NUMBER (increase space ABOVE)
-            # ------------------------------
-            ty -= 4 * mm   # extra top spacing before Order No
+        table_data = [["Product", "Qty"]]
+        for r in page1_rows:
+            table_data.append([r["product"], r["qty"]])
 
-            p = Paragraph(f"<b>Order No: {o.order_number}</b>", bold)
-            p.wrap(block_w - 30*mm, 20*mm)
-            p.drawOn(c, tx, ty)
-            ty -= 10 * mm     # bigger gap after order no
+        table = Table(table_data, colWidths=[140*mm, 40*mm])
+        table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+        ]))
 
+        tw, th = table.wrap(page_w - 30*mm, 9999)
+        table.drawOn(c, tx, ty - th)
 
-            # ------------------------------
-            # COURIER NAME (normal)
-            # ------------------------------
-            p = Paragraph(f"<b>Courier Name: {o.preferred_courier_service}</b>", bold)
-            p.wrap(block_w - 20 * mm, 20 * mm)
-            p.drawOn(c, tx, ty)
-            ty -= 5 * mm      # REDUCED gap (was 8mm)
+        # -------- PAGE 2 --------
+        if page2_rows:
+            c.showPage()
 
+            table_data2 = [["Product", "Qty"]]
+            for r in page2_rows:
+                table_data2.append([r["product"], r["qty"]])
 
-            # ------------------------------
-            # TABLE (reduced gap)
-            # ------------------------------
-            table_data = [["Product", "Qty", "Price"]] + items_data
-
-            table = Table(table_data, colWidths=[100*mm, 30*mm, 30*mm])
-            table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, -1), 'DejaVuSans'),
+            table2 = Table(table_data2, colWidths=[140*mm, 40*mm])
+            table2.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-                ('BOX', (0, 0), (-1, -1), 1, colors.black),
             ]))
 
-            tw, th = table.wrap(block_w - 30*mm, 9999)
+            tw2, th2 = table2.wrap(page_w - 30*mm, 9999)
+            table2.drawOn(c, 15*mm, page_h - 30*mm - th2)
 
-            ty -= th   # draw tightly under courier name
-            table.drawOn(c, tx, ty)
-
-
-        c.showPage()
         c.save()
-
         buffer.seek(0)
+
         return HttpResponse(
             buffer,
             content_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=single_address_label.pdf"}
         )
+
 
 
 class UnprintedOrdersView(APIView):

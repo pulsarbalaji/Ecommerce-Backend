@@ -117,7 +117,7 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["order_number", "ordered_at"]
 
-
+    
     def create(self, validated_data):
         items_data = validated_data.pop("items")
         order = OrderDetails.objects.create(**validated_data)
