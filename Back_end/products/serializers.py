@@ -429,7 +429,8 @@ class DashboardStatsSerializer(serializers.Serializer):
     total_customers = serializers.IntegerField()
     total_products = serializers.IntegerField()
     confirmed_orders = serializers.IntegerField()
-    cancelled_orders = serializers.IntegerField()
+    shipped_orders = serializers.IntegerField()
+    delivered_orders = serializers.IntegerField()
 
 # Sales Chart Serializer
 class SalesChartSerializer(serializers.Serializer):

@@ -125,7 +125,7 @@
         {% for item in order.items.all %}
         <tr>
           <td>{{ forloop.counter }}</td>
-          <td>{{ item.product.clean_name }}</td>
+          <td>{{ item.product.clean_name|linebreaks }}</td>
           <td>{{ item.quantity }}</td>
           <td>{{ item.price }}</td>
           <td>{{ item.total }}</td>

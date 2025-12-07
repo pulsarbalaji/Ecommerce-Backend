@@ -163,19 +163,32 @@ class OrderDetails(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def save(self, *args, **kwargs):
+    # Set delivered_at when status changes to delivered
         if self.pk:
-            old_instance = OrderDetails.objects.get(pk=self.pk)
-            if old_instance.status != self.status and self.status == self.OrderStatus.DELIVERED:
+            old = OrderDetails.objects.get(pk=self.pk)
+            if old.status != self.status and self.status == self.OrderStatus.DELIVERED:
                 self.delivered_at = timezone.now()
         else:
             if self.status == self.OrderStatus.DELIVERED:
                 self.delivered_at = timezone.now()
 
+        # Generate ORDER NUMBER (only first time)
         if not self.order_number:
-            self.order_number = f"ORD-{uuid.uuid4().hex[:10].upper()}"
+            import random
+            from datetime import datetime
+
+            today = datetime.now().strftime("%Y%m%d")   # YYYYMMDD
+            unique = False
+
+            while not unique:
+                random_part = str(random.randint(100000, 999999))  # 6-digit random
+                generated = f"ORD-{today}-{random_part}"
+
+                if not OrderDetails.objects.filter(order_number=generated).exists():
+                    unique = True
+                    self.order_number = generated
 
         super().save(*args, **kwargs)
-
 
     def __str__(self):
         return f"Order {self.order_number} - {self.customer.full_name}"

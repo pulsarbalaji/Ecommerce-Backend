@@ -309,6 +309,23 @@ class OrderDetailsView(generics.GenericAPIView):
         return Response({"status": True, "message": "Order deleted"}, status=200)
     
 class InvoicePDFView(APIView):
+    @staticmethod
+    def format_product_name(name, max_length=18):
+        if not name:
+            return ""
+
+        name = name.replace("_", " ")
+        name = name.title()
+
+        result = ""
+        for word in name.split():
+            if len(result) + len(word) > max_length:
+                result += "\n" + word
+            else:
+                result += (" " + word if result else word)
+
+        return result
+
     def get(self, request, order_id):
         # Get order and invoice
         order = get_object_or_404(OrderDetails, id=order_id)
@@ -364,6 +381,15 @@ class InvoicePDFView(APIView):
             "invoice_number": invoice.invoice_number,
             "invoice_date": invoice.generated_at.strftime("%d-%b-%Y"),
             "order": order,
+             "formatted_items": [
+        {
+            "name": self.format_product_name(item.product.product_name),
+            "qty": item.quantity,
+            "price": item.price,
+            "total": item.price * item.quantity,
+        }
+        for item in order.items.all()
+    ],
             "customer": {
                 "name": f"{order.first_name or ''} {order.last_name or ''}".strip(),
                 "shipping_address": order.shipping_address,
@@ -803,7 +829,9 @@ class DashboardAPIView(APIView):
                 "total_customers": CustomerDetails.objects.count(),
                 "total_products": Product.objects.count(),
                 "confirmed_orders": OrderDetails.objects.filter(status__iexact="order_confirmed").count(),
-                "cancelled_orders": OrderDetails.objects.filter(status__iexact="cancelled").count(),
+                "shipped_orders": OrderDetails.objects.filter(status__iexact="shipped").count(),
+                "delivered_orders": OrderDetails.objects.filter(status__iexact="delivered").count(),
+
             }
 
             # ---------------- Sales Chart (last 7 days) ----------------
@@ -1231,6 +1259,7 @@ class ProductFeedbackListAPIView(APIView):
         })
     
 class ProductRatingSummaryAPIView(APIView):
+    permission_classes = [AllowAny]
     def get(self, request, product_id):
         feedbacks = ProductFeedback.objects.filter(product_id=product_id,is_approved=True)
 
@@ -1265,6 +1294,7 @@ class ProductFeedbackFilterAPIView(generics.ListAPIView):
     serializer_class = ProductFeedbackSerializer
     pagination_class = FeedbackPagination
 
+    permission_classes = [AllowAny]
     def get_queryset(self):
         product_id = self.kwargs["product_id"]
         rating = self.request.query_params.get("rating")  # ?rating=5
