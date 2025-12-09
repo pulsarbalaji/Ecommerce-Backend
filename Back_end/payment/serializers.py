@@ -12,42 +12,25 @@ def format_name(name: str):
     return name.replace("_", " ")
 
 class OrderItemSerializer(serializers.ModelSerializer):
-    product_name = serializers.SerializerMethodField()
-    product_image = serializers.SerializerMethodField()
-
     class Meta:
         model = OrderItem
-        fields = ["product","product_image", "product_name", "quantity", "price", "tax", "total"]
+        fields = ["product", "quantity", "price", "tax", "total"]
+        read_only_fields = ["price", "tax", "total"]  # ✅ client cannot control
 
-    # ✅ Format product name for API response
-    def get_product_name(self, obj):
-        if obj.product and obj.product.product_name:
-            return format_name(obj.product.product_name)
-        return None
-
-    def get_product_image(self, obj):
-        if obj.product.product_image and hasattr(obj.product.product_image, "url"):
-            return obj.product.product_image.url  
-        return None
-
-    def create(self, validated_data):
-        validated_data["total"] = Decimal(validated_data["price"]) * validated_data["quantity"]
-        return super().create(validated_data)
-
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # optional: include product name/image for frontend
+        data["product_name"] = instance.product.clean_name
+        if instance.product.product_image and hasattr(instance.product.product_image, "url"):
+            data["product_image"] = instance.product.product_image.url
+        return data
+    
 # -------------------------------
 # Order Details Serializer
 # -------------------------------
 
-
 class OrderDetailsSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
-    customer = serializers.PrimaryKeyRelatedField(queryset=CustomerDetails.objects.all())
-    order_number = serializers.CharField(read_only=True)
-
-    tax_percent = serializers.DecimalField(
-    max_digits=5, decimal_places=2, write_only=True, required=False
-)
-
 
     class Meta:
         model = OrderDetails
@@ -70,68 +53,77 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
             "total_amount",
             "status",
             "items",
-            "tax_percent",   # ← ADD THIS FIELD
         ]
-        read_only_fields = ["subtotal", "tax", "total_amount", "status", "payment_status"]
+        read_only_fields = [
+            "order_number",
+            "subtotal",
+            "tax",
+            "shipping_cost",
+            "total_amount",
+            "status",
+            "payment_status",
+        ]
 
     @transaction.atomic
     def create(self, validated_data):
+        """
+        IMPORTANT:
+        - Ignore any client-sent price/tax/total
+        - Compute subtotal, tax, shipping, total_amount on server
+        """
         items_data = validated_data.pop("items")
-        # tax_percent is write_only; default to 0 if not provided
-        gst_percent = Decimal(validated_data.pop("tax_percent", 0))
-        # shipping_cost might be missing or a string/Decimal — coerce to Decimal
-        shipping_cost = Decimal(validated_data.get("shipping_cost", 0))
 
-        # ---------- SUBTOTAL ----------
-        subtotal = sum(
-            (Decimal(item["price"]) * int(item["quantity"]))
-            for item in items_data
-        ).quantize(Decimal("0.00"))
+        # ✅ get GST & shipping from DB settings
+        gst_setting = GSTSetting.objects.first()
+        courier_setting = CourierChargeSetting.objects.first()
 
-        # ---------- TAX ----------
+        gst_percent = Decimal(getattr(gst_setting, "gst_percentage", 0) or 0)
+        shipping_cost = Decimal(getattr(courier_setting, "courier_charge", 0) or 0)
+
+        subtotal = Decimal("0.00")
+        order_items = []
+
+        # ---------- compute totals from DB ----------
+        for item in items_data:
+            product = item["product"]  # DRF gives model instance
+            quantity = int(item["quantity"])
+
+            # always use product.price from DB (or derive offer here)
+            unit_price = product.price
+
+            line_subtotal = (unit_price * quantity).quantize(Decimal("0.00"))
+            line_tax = (line_subtotal * gst_percent / Decimal("100")).quantize(Decimal("0.00"))
+            line_total = (line_subtotal + line_tax).quantize(Decimal("0.00"))
+
+            subtotal += line_subtotal
+            order_items.append((product, quantity, unit_price, line_tax, line_total))
+
+        subtotal = subtotal.quantize(Decimal("0.00"))
         tax_total = (subtotal * gst_percent / Decimal("100")).quantize(Decimal("0.00"))
 
-        # ---------- TOTAL ---------- (round to nearest integer rupee)
         total_amount = subtotal + tax_total + shipping_cost
-        # round to nearest integer with half-up behavior
         total_amount = total_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
         validated_data["subtotal"] = subtotal
         validated_data["tax"] = tax_total
+        validated_data["shipping_cost"] = shipping_cost
         validated_data["total_amount"] = total_amount
 
-        # ---------- CREATE ORDER ----------
+        # ---------- create Order header ----------
         order = OrderDetails.objects.create(**validated_data)
 
-        # ---------- CREATE ORDER ITEMS ----------
-        for item in items_data:
-            # If item["product"] is a PK, you should resolve it to instance here.
-            # Many nested serializers pass actual model instances already; adjust as needed.
-            product = item["product"]
-            price = Decimal(item["price"])
-            quantity = int(item["quantity"])
-
-            # tax for line
-            line_tax = (price * quantity * gst_percent / Decimal("100")).quantize(Decimal("0.00"))
-            # line total usually includes price*qty + tax (adjust if your model differs)
-            line_total = (price * quantity + line_tax).quantize(Decimal("0.00"))
-
+        # ---------- create Order items (no stock change here) ----------
+        for product, quantity, unit_price, line_tax, line_total in order_items:
             OrderItem.objects.create(
                 order=order,
                 product=product,
                 quantity=quantity,
-                price=price,
+                price=unit_price,
                 tax=line_tax,
                 total=line_total,
             )
 
-            # decrement stock and save — ensure product is a model instance
-            if hasattr(product, "stock_quantity"):
-                product.stock_quantity = max(product.stock_quantity - quantity, 0)
-                product.save(update_fields=["stock_quantity"])
-
         return order
-
 
 # -------------------------------
 # Payment Serializer
@@ -139,7 +131,7 @@ class OrderDetailsSerializer(serializers.ModelSerializer):
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
-        fields = ["order_id", "payment_id", "status", "amount", "method"]
+        fields = ["razorpay_order_id", "razorpay_payment_id", "status", "amount", "method"]
 
 
 # -------------------------------
@@ -175,11 +167,9 @@ class OrderTrackingSerializer(serializers.ModelSerializer):
         ]
 
     def get_payment(self, obj):
-        payment = Payment.objects.filter(
-            customer=obj.customer, order_id=obj.order_number
-        ).first()
+        payment = obj.payments.first()  # via related_name on FK
         return PaymentSerializer(payment).data if payment else None
-    
+
     def get_tax_percent(self, obj):
         """Return GST percentage based on stored subtotal & tax."""
         try:
